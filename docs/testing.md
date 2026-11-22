@@ -560,25 +560,19 @@ suites (`exports.rs`, `read_only.rs`, `show.rs`, `kept.rs`, `live.rs` and
 the rest), `ledger-package/tests/package.rs`, `ledger-store` `saving.rs`
 and `ops.rs`.
 
-**Slice 7, backups and restore.** `ledger_store::backup`, `Root::restore`,
-`ledger-mcp` `backup.rs` and `tools/backup.rs`, the loop in `local.rs`:
-`ledger-cli/tests/backups.rs` (17: both targets after a write, the quiet
-before a backup, close and catching up at the next open, admin only and
-the head unmoved, a target that moved on, a failing target waiting while
-the others carry on, a damaged record, restore beside and on a clean
-install, of the previewed backup only, with its vault and key, refusing
-damage, never overwriting, a failed replace, a restored copy leaving its
-original's repository alone, a backup folder never made again, drills on
-open and a failed drill flagged), `open_while_held.rs` (`books restore`
-and its default id), `backup.rs`'s unit tests (20, among them links and
-strangers refused before checkout, target and archive hooks never run, the
-owner's hostile git configuration never spoiling a backup, repositories
-with settings of their own or something beside them refused, fake gits
-for the time limit and the process group), `tests/root.rs` (never moving
-books something holds). Five review rounds (about 25, 15, 10, 7 and 3
-findings, all fixed) and a sixth that only attacked the repository guard
-(one low finding, fixed). The backup suite passed every run three at a
-time.
+**Slice 7, backups and restore.** (Rewritten for the plain-folder form,
+D-91: see "Backups in plain folders" below; the git form's tests are gone and
+the table there says what holds each promise now.) `ledger_store::backup`,
+`Root::restore`, `ledger-mcp` `backup.rs` and `tools/backup.rs`, the loop in
+`local.rs`: `ledger-cli/tests/backups.rs` (18: the folder after a write, the
+quiet before a backup, close and catching up at the next open, admin only and
+the head unmoved, another history never written over, restore beside and on a
+clean install, of the previewed backup only, with its vault and key, refusing
+damage, never overwriting, a failed replace, a backup folder never made again,
+drills on open and a failed drill flagged, old settings and an old history left
+alone and said, a clone of an old backup adopted), `open_while_held.rs`
+(`books restore` and its default id), `tests/root.rs` (never moving books
+something holds).
 
 **Slice 8, the viewer's menu, setup, no confinement (D-32).**
 `ledger-gui/tests/owner_menu.rs` (each item through a fake owner, the
@@ -1556,23 +1550,20 @@ version's journal format (BS-format-1). Mutation testing waits for P12
   books' file named for its schema. Checked by breaking it (the legacy
   file always taken, the schema check dropped): three tests fail. The
   store's other tests use `db_file()`, this version's file.
-- `ledger-store` `backup.rs`: `the_archive_proves_to_hold_the_book_as_it_is_keys_and_all`
-  (a changed or extra key, a changed vault record, books that moved on, a
-  journal changed under the recorded head: each refused; the scratch
-  folder always removed).
+- `ledger-store` `tests/backup.rs`: `the_local_backup_proves_to_hold_the_book_as_it_is_keys_and_all`
+  (a changed or extra key, a changed vault record, books that moved on:
+  each refused; the scratch folder always removed).
 - `ledger-mcp` `local.rs`: `format_upgrade_waits_for_consent` (listed as
   waiting; no passphrase set, a wrong one or none refused before anything
   is done, no backup, no line, still served; with it, the backup is the
-  archive's latest commit, holding the journal as it was and the key; one
+  local backup's latest, holding the journal as it was and the key; one
   line, the whole format; on the backup record; again, nothing; new books
-  wait for nothing, and asking for their upgrade makes not even a backup
-  repository), `no_upgrade_without_a_backup` (a backup refused: nothing
+  wait for nothing, and asking for their upgrade makes not even a local
+  backup), `no_upgrade_without_a_backup` (a backup refused: nothing
   upgraded, still waiting, recorded) and
-  `no_upgrade_unless_the_backup_just_made_is_proven` (an archive whose
-  head names another branch takes the commit where no clone finds it:
-  what is proven isn't what was made, nothing upgraded, both recorded;
-  put right, the latest commit, which already holds the books, is proven
-  and the upgrade made). Each checked by breaking the code it guards (the
+  `no_upgrade_unless_the_backup_is_proven` (a local backup with a piece
+  damaged proves nothing whole: nothing upgraded, recorded; put right, the
+  backup, which already holds the books, is proven and the upgrade made). Each checked by breaking the code it guards (the
   proof skipped, the made-is-proven check dropped, the early return for
   books that wait for nothing removed): the test fails, then passes once
   restored.
@@ -1609,8 +1600,7 @@ version's journal format (BS-format-1). Mutation testing waits for P12
 **For P12:** `ledger-store` `format.rs` (`current`, `upgrade_to`, `adds`,
 `require_format`, `require_feature`), `store.rs` (`create_in_format`,
 `ensure_format`, `ensure_feature`, `upgrade_format`), `root.rs`
-(adoption's upgrade and its verify), `backup.rs` (`prove_archive`,
-`held_files`); `ledger-mcp` `backup.rs` (`upgrade_format`,
+(adoption's upgrade and its verify), `backup/read.rs` (`prove_local`); `ledger-mcp` `backup.rs` (`upgrade_format`,
 `UpgradeFailed::parts`), `local.rs` (`upgrade_format`, the List's
 `format_upgrade`, `waiting`), `server.rs` (`with_store_mut`),
 `tools/kept.rs` (the first next step, `format_upgrade`), `admin.rs`;
@@ -2320,7 +2310,7 @@ data root of its own, reached as an agent reaches it.
   each start, as a new server process read the same books, and lets a
   test write books into the root before the first), the async rmcp
   `connect` and `call`, and `book_files` (the books' files but what every
-  call writes by design: the access log, `ops/`, `archive.git/`,
+  call writes by design: the access log, `ops/`, `local-backup/`,
   `exports/`, `uploads/`, SQLite's -wal and -shm). Settings a test gives
   as a settings file's text are set as an agent sets them: the changes
   `ledger_config::codec::import` reads from it, by `books.set_setting`.
@@ -4327,13 +4317,13 @@ one book never refuses or holds up a call on another.
 | `book_open_close::the_servers_own_close_cuts_stalled_requests_and_exits_zero_in_time` | one upload stalled on one book and one MCP body stalled on another, the server's stdin closed: exit code 0 within the bound, both cut after the grace, no part file, nothing journaled, two `cut_by_close` records, every log whole |
 | `book_open_close::a_backup_and_a_sweep_that_took_their_handles_before_a_close_do_nothing_after_it`, `…a_drill_and_a_sweep…` | `--timer-hold` holds a timer between taking a book's handles and acting; the book is closed meanwhile, stray files planted, the timers go on: the closed book's tree doesn't move; opened again the sweep works (fail with the handles' closed state, the gate's check and the backups' shut flag removed) |
 | `book_open_close::a_close_stops_a_slow_drill_instead_of_waiting_for_it` | `--slow-steps` makes each phase of a drill wait a minute: the close answers plain `closed` (the last backup was made), within the stated sum, with the drill's scratch clone removed (fails without `hurry`: `closed_backup_incomplete`) |
-| `book_open_close::a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_backup_succeeds` | REAL git (a wrapper that points git's hooks at a `reference-transaction` hook that waits) stopped inside `init`, a commit and a push to a folder by a close: git is sent SIGTERM and removes its own locks, so none is left in the archive or the folder and the backup's record holds no `lock_removed` or `lock_left` (nothing for the server to clean up), the reopened book backs up with no step by hand, `git fsck --strict` passes on both |
+| `book_open_close::a_close_is_not_answered_while_its_backup_still_runs` | a backup held at each phase (`--slow-steps` and the book's `ops/slow-backup` file) when a close begins: the close is answered at its bound, saying the backup wasn't whole; the destination still proves whole at its previous manifest and nothing in it or in the book moves after the answer, with the stall lifted |
 | `local::tests::a_close_stops_a_format_upgrade_before_it_is_journaled` | an upgrade held in its backup's proof: the close stops it, it says nothing was upgraded, the journal is byte for byte as before |
 | `local::tests::a_body_read_to_its_end_is_never_cut_and_one_not_yet_is` | the line of the cut: a body read to its end is never cut (the cut firing, the body asked again), one not read to its end is cut even with bytes on the way |
-| `ledger-store` `backup::tests::a_git_stopped_by_sigterm_mid_commit_…`, `…_stopped_mid_add_…`, `a_push_stopped_by_sigterm_…`, `a_git_that_ignores_sigterm_…`, `a_git_that_cannot_end_on_sigterm_…`, `a_lock_left_in_a_folder_target_…`, `a_push_stopped_during_the_pack_transfer_…`, `the_archives_age_rule_at_open`, `removal_after_a_stop_goes_through_the_handle_…`, `git_locks::tests` (3) | REAL git stopped inside a commit (HEAD and ref locks), an add (the index lock) and a push to a folder (the target's ref lock): on SIGTERM it removes its own locks and nothing is noted (the grace is long, so a git that needed the kill would show); a git whose group is frozen (SIGSTOP, so SIGTERM stays pending) is killed only after the grace, and the archive's locks it left (not there when the command began) are removed, noted; the folder target's lock is NEVER removed, reported with its whole path (`LockLeft`, `lock_left` with `path`), a lock that was there before the push is untouched and not named, a later push fails by git's words and removes nothing, the next one passes once the test removes the file; a fake git that traps SIGTERM is sent it first (marker) and killed after the grace with all it started; a 48 MiB pack held in the receiving end's `pre-receive` hook (the target's `incoming-` quarantine present) stopped by SIGTERM and by the kill, `git fsck --strict` on both repositories at once; the archive's locks at open: older than ten minutes removed and noted, younger left and said, non-lock names, folders and links untouched; a swapped `refs` folder or archive path after the handle was opened touches nothing outside; the handle module: exact lock names only, regular files only, no link followed |
-| `ledger-store` `backup::tests::a_drill_stops_inside_the_phase_it_is_told_to_stop_in` | for each phase (clone, replay, verify, blobs, prefix) a stop set as the phase begins ends the drill inside it (the observer sees no later phase), scratch removed; each case fails when the loop's looks inside that phase are removed |
+| `ledger-store` `tests/backup.rs` `a_program_that_dies_at_any_write_leaves_what_proved_whole_before`, `a_stopped_backup_leaves_what_proved_whole_before` | a death at each of a backup's write points, and a stop asked before it: what is left proves whole at the previous manifest or the new one, and the next run goes on (replaces the tests of a git stopped by SIGTERM or killed, and of the locks it left) |
+| `ledger-store` `tests/backup.rs` `a_drill_stops_inside_the_phase_it_is_told_to_stop_in` | for each phase (fetch, replay, verify, blobs, vault, prefix) a stop set as the phase begins ends the drill inside it (the observer sees no later phase), scratch removed |
 | `book_open_close::a_running_call_is_never_cut_when_the_grace_runs_out` | an ordinary call (`books.attach_receipt`, held inside its read of its file, a named pipe) past the grace (body whole) is not cut: it finishes when fed, is answered and recorded `ok`, and then the close is answered (a backup asked for is no longer this call: it is stoppable) |
-| `book_open_close::a_close_stops_a_running_backup_call_and_says_so` | `books.back_up_now` held in a stalled `git` (never lifted until the call answers): the close stops it, the call is answered that it was stopped because the books are closing, its access record is `refused: stopped_by_close` with no head, the backup record holds `stopped` and no result of its own for the run, git and all it started are gone, the close's last backup is made and the close answers `closed` |
+| `book_open_close::a_close_stops_a_running_backup_call_and_says_so` | `books.back_up_now` held at a phase of its copy (never lifted until the call answers): the close stops it, the call is answered that it was stopped because the books are closing, its access record is `refused: stopped_by_close` with no head, the backup record says `stopped` and no result of the run's own; the close's own last backup is made as always |
 | `book_open_close::a_close_stops_a_running_verification_and_a_running_package_and_says_so` | `books.verify` and `books.export_cpa_package` held as they begin by `--timer-hold` (`call:...`), which the close releases: each is stopped at its first look, answers it was stopped, is recorded `refused: stopped_by_close`, the journal is unchanged |
 | `book_open_close::a_close_stops_the_restore_and_the_open_of_its_own_book_leaving_the_root_as_it_was` | a restore over a book and the open of a book, each held inside a phase (`restore:copy`, `open:start`): its scratch or staging folder is there while held; a close of THAT book stops it, it answers it was stopped, the root's `books/` and `legacy/` are byte for byte as before; asked again it goes through |
 | `book_open_close::the_servers_close_stops_every_running_admin_job_leaving_the_root_as_it_was` | restore (a new book, and over `acme`), adopt, create and open, each held inside a phase, the server closed with nothing lifting the hold: each answers it was stopped, the root as it was, exit 0; asked again on a new server the first goes through |
@@ -4342,10 +4332,9 @@ one book never refuses or holds up a call on another.
 | `ledger-store` `tests/root.rs::a_job_stopped_at_any_phase_before_its_point_of_no_return_leaves_the_root_as_it_was` | create, adopt, restore (over existing books) and the restore preview stopped at each phase they ask: `Stopped`, the root (`books/`, `legacy/`) byte for byte as before; never stopped, `place` is the last phase asked (nothing after the point of no return) |
 | `ledger-store` `tests/root.rs::an_adoption_that_does_not_finish_leaves_no_lock_file_in_the_source` | a source with no lock file: the adoption stopped at each of its seven phases, refused after taking the lock (a stale preview head), and panicking in the middle leaves the source folder name for name, byte for byte and mode for mode as it was; a lock file swapped in by someone else during the adoption is not removed; a source that had its lock keeps it (stopped or adopted, `source_lock_created` false); a success of a source with none leaves the one it made and says so. Mutation: no removal fails it |
 | `ledger-store` `tests/root.rs::a_job_waiting_for_its_turn_stops_when_asked_and_otherwise_waits_for_it` | the turn at making books held (as another process would): a create that isn't asked to stop waits, and stops within seconds once asked (`Stopped`, nothing made); not asked, it goes through when the turn is let go. Mutation: a blocking wait for the turn fails it |
-| `book_open_close::a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_the_server` | REAL git in a push to a folder with its group frozen, so only the kill after the grace ends it: the lock it leaves is still there after the close, recorded `lock_left` with its whole path, no `lock_removed` for the folder, the close's answer and `books.backup` name the file and say when it may be removed, a lock that was there before is neither touched nor named, a later backup fails by git's words and removes nothing, and once the file is removed the backup goes on, `git fsck --strict` on both |
 | `book_open_close::a_call_whose_answer_was_never_read_is_on_record_as_having_run` | a journaled draft whose client goes without reading: after the close the access log has its record, outcome `ok`, with the head it wrote (INVARIANT 14: a retry isn't made safe by anything; the record says it ran) |
-| `book_open_close::a_close_is_not_answered_while_its_backup_still_runs` | a book with a folder target and a stand-in `git` on the server's PATH that waits: the close isn't answered before its backup bound (1.2 s), then answers `closed_backup_incomplete`, git and all it started are gone, and lifting the stall makes nothing resume; the reopened book's backup record is a whole chain and it backs up (fails when `shut` is removed: git still runs after the answer) |
-| `book_open_close::a_close_whose_backup_fails_says_so_and_leaves_nothing_running` | a target whose disk isn't there: `closed_backup_incomplete` naming the failure, quickly, no git run afterwards; the same book with its disk back is answered plainly `closed` |
+| `book_open_close::a_close_is_not_answered_while_its_backup_still_runs` | a book with a backup folder whose backup waits at each phase: the close isn't answered before its backup bound (1.2 s), then answers `closed_backup_incomplete`; the folder still proves whole at the backup before, and lifting the stall makes nothing resume; the reopened book's backup record is a whole chain and it backs up (fails when `shut` is removed: the copy still runs after the answer) |
+| `book_open_close::a_close_whose_backup_fails_says_so_and_leaves_nothing_running` | a target whose disk isn't there: `closed_backup_incomplete` naming the failure, quickly, nothing run afterwards; the same book with its disk back is answered plainly `closed` |
 | `book_open_close::an_upload_in_flight_finishes_before_the_close_is_answered` | an upload half received when the close begins: the close isn't answered until it is complete (200), its bytes are kept, its record is written, no `.part` is left, nothing moves afterwards |
 | `book_open_close::a_restore_over_an_open_book_waits_for_what_is_inside_it` | a replacing restore over a book with an upload half received isn't answered for five seconds (a restore that doesn't wait takes about one); the upload then completes, the replaced book's log in `legacy/` holds it, is whole, no `.part` is left in `legacy/`, and it stands still (fails when the restore lets the store go without the drain) |
 | `book_open_close::downloads_during_a_close_complete_or_are_refused` | four clients download a 300 KB file in a loop while the book closes: each answer is a whole 200 or a refusal, the number of 200s is the number of download records, and nothing moves after the answer |
@@ -5212,3 +5201,54 @@ count.
   `rule_for_refusal`'s new arms; `check_amount`'s `positive` flag; `derive`'s
   `refusal_justified` arms, `Model::post`'s close, `signed`'s date window and
   `closings` flag, the accounting-equation check; the spec test's pin search.
+
+
+## Backups in plain folders (P15 section 9, D-91, D-92)
+
+The form is files written once (docs/backups.md), so what is tested is what
+the files promise, in four layers.
+
+- `ledger-store` `tests/backup.rs` (22 tests, about 35 s): the form on disk
+  and that a second backup only adds files; other or newer history never
+  written; a disk that is gone never made again; two writers; a loser of a
+  manifest number; a death at every write point of a second backup (the
+  program is made to die at each write point in turn: what is left restores,
+  and the next run goes on); a stop; a flipped, cut or emptied piece, sealed or
+  not; a damaged newest backup falling back to the one before and saying so; the
+  passphrase (counts and sizes only, a wrong one never yields books and is
+  told from damage, a changed one a new set beside the old, the key private);
+  the single file; the removed tests' promises (a purged vault, a scratch file
+  left behind, a stored file that doesn't match its name, a drill of this book's
+  history only, the local backup proof, a link never followed, a drill stopping
+  inside its phase).
+- `ledger-store` `tests/backup_props.rs` (5 properties, 5 cases each, about
+  30 s): a destination only grows; the destination as of any manifest restores
+  to a prefix of the books; random interleavings of two writers; any flipped or
+  cut piece is found; no wrong passphrase yields books.
+- `ledger-cli` `tests/backups.rs` and `tests/book_open_close.rs`: the server and
+  the admin socket on a real root of its own.
+- `ledger-mcp` `backup.rs`, `local.rs` (the format upgrade's proven local
+  backup), `ledger-store` `tests/root.rs` (restore's phases).
+
+What each removed test of the git form is now (git, its locks and its output
+are gone; a promise is either held by a new test or named as gone):
+
+| Removed | Now |
+|---|---|
+| `a_missing_git_says_how_to_get_it`, `the_mac_stub_is_not_a_git_until_the_developer_tools_are_there` | gone: nothing is installed for backups; `no_package_depends_on_another_program_for_backups` |
+| `a_backup_is_the_book_and_proves_whole` | `a_backup_is_the_book_and_proves_whole` |
+| `a_folder_targets_hooks_never_run`, `the_archives_own_hooks_never_run`, `the_owners_git_configuration_never_spoils_a_backup`, `no_attributes_rule_changes_a_byte`, `no_ignore_rule_leaves_a_file_out`, `a_file_git_wont_take_fails_the_backup`, `what_git_said_keeps_whole_lines_and_drops_its_progress`, `what_git_said_cut_short_ends_at_its_last_whole_line`, `local_addresses_are_told_from_networked_ones`, `a_repository_with_settings_of_its_own_is_never_pushed_to_or_read` | gone: no program runs, no rule or setting of anyone's can change a file, and there are no addresses; bytes are held by `any_whole_manifest_restores_a_prefix_of_the_books` |
+| `a_target_that_moved_on_is_never_overwritten` | `a_destination_of_other_books_or_another_history_is_never_written` |
+| `a_missing_folder_or_a_strange_address_is_said_plainly`, `a_backup_folder_gone_from_a_connected_disk_is_never_made_again` | `a_disk_that_is_gone_is_never_made_again_where_it_should_be` |
+| `a_purged_vault_leaves_the_next_backup` | `a_purged_vault_leaves_the_next_backup_and_not_the_earlier_ones` |
+| `a_lock_left_behind_never_stops_the_next_backup`, `the_archives_age_rule_at_open`, `removal_after_a_stop_goes_through_the_handle_opened_before_the_command`, `a_lock_left_in_a_folder_target_by_a_kill_is_never_removed_but_reported`, the `git_locks.rs` tests | gone: the form has no lock to leave; `a_scratch_file_left_by_a_dead_program_never_stops_the_next_backup` |
+| `a_backup_with_a_changed_stored_file_or_a_busy_scratch_is_refused` | `a_stored_file_that_does_not_match_its_name_is_refused_and_nothing_is_written` |
+| `a_drill_proves_this_books_history_only` | `a_drill_proves_this_books_history_only` |
+| `the_archive_proves_to_hold_the_book_as_it_is_keys_and_all` | `the_local_backup_proves_to_hold_the_book_as_it_is_keys_and_all` |
+| `a_backup_holding_a_link_or_a_stranger_is_refused_before_checkout` | `a_link_in_a_backup_is_never_followed`; the names in a manifest are checked on read |
+| the five tests of a git stopped by SIGTERM, killed after the grace, left quiet or cancelled, and `a_push_stopped_during_the_pack_transfer_leaves_both_repositories_whole` | gone: no process is stopped; `a_program_that_dies_at_any_write_leaves_what_proved_whole_before`, `a_stopped_backup_leaves_what_proved_whole_before` |
+| `a_drill_stops_inside_the_phase_it_is_told_to_stop_in` | `a_drill_stops_inside_the_phase_it_is_told_to_stop_in` |
+| the `drain.rs` tests (a pipe another process holds) | gone: nothing is piped |
+| `book_open_close` `a_close_that_stops_git_in_a_commit_or_a_push_...`, `a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_the_server` | `a_close_is_not_answered_while_its_backup_still_runs`; the lock one is gone with locks |
+| `ledger-cli` `backups.rs` `books_restored_beside_their_original_leave_its_repository_alone` | `restore_beside_existing_books_and_on_a_clean_install` (a copy backs up to a folder of its own) |
+| `a_failing_target_waits_while_the_others_carry_on` | `a_failing_destination_is_not_tried_again_after_each_write` (one destination) |

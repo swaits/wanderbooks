@@ -25,25 +25,33 @@
 //!      harmless, and at most a short manifest, which no reader accepts
 //!      (it carries its own check) and whose number is spent.
 //!   3. A manifest names every piece it needs, by where it is, how long it
-//!      is and what is in it (SHA-256). A reader takes the newest manifest
-//!      whose pieces are all there at the length it names, and the proof
-//!      (`verify`) re-hashes every one: the journal's chain replays, every
-//!      stored file re-hashes, every vault record the books name and the
-//!      key that opens them are there, the head is the one recorded.
+//!      is and what is in it (SHA-256), either itself or by naming the
+//!      manifest before it (by number and by what its body hashes to) and
+//!      only what is new, a chain of at most `DELTA_CHAIN` links; a reader
+//!      proves the chain link by link. A reader tries the manifests newest
+//!      first and takes the first whose pieces are all there at the length
+//!      it names and that proves (`verify_found`), reading no more: the
+//!      journal's chain replays to the head the manifest records, the books
+//!      open, every stored file re-hashes, every vault record the books name
+//!      and the key that opens them are there. A piece is accepted under
+//!      any generation of it whose contents hash right.
 //!   4. A backup is written only onto a destination whose newest whole
 //!      manifest is a point on the live journal (same line, same hash,
-//!      same place in the file). Otherwise the destination holds other
-//!      books or a different history of these, or a newer one than this
-//!      computer has: it is said, and nothing is written.
+//!      same place in the file). Otherwise it is said, and nothing is
+//!      written: the live journal is the beginning of a longer one
+//!      (`Ahead`: the books are behind the folder, and a new set may be
+//!      begun beside the old at the person's request), or the books are
+//!      others or have diverged (`Elsewhere`).
 //!   5. Two programs, or two computers, writing one destination cannot
 //!      corrupt it: pieces are named by what is in them, so two writers of
 //!      one piece write the same bytes; the only decision is which of them
 //!      takes the next manifest number, and the disk decides it
 //!      (exclusive create). The loser looks again and goes on from what the
 //!      winner wrote, or finds there is nothing left to write.
-//!   6. Each manifest stands alone: it names all its pieces, so a manifest
-//!      that is lost, or replaced by a sync service's conflict copy,
-//!      takes nothing else with it.
+//!   6. A manifest that is lost, or replaced by a sync service's conflict
+//!      copy, makes unreadable only the manifests chained on it (at most
+//!      the rest of its chain of 64); every earlier one, and every later
+//!      one that names everything, stands.
 //!   7. With a passphrase every piece, every manifest, is sealed
 //!      (seal.rs); names say no more than counts and sizes; the key is
 //!      derived by a memory-hard function; this computer keeps it in the
@@ -55,6 +63,17 @@
 //!      manifest.
 //!   9. Nothing here names a path of the data root: errors speak of "the
 //!      backup folder".
+//!  10. A backup is proven before it is recorded good (write.rs
+//!      `prove_and_repair`, read.rs `prove_written`): the manifest just put
+//!      is read back, every journal and access segment re-hashed, the chain
+//!      replayed to its head, the vault and keys present, and the stored
+//!      files this backup added and one sixteenth of the rest re-hashed (a
+//!      share that comes round within 16 backups); what is found damaged is
+//!      written again under a new generation beside it and proven again.
+//!      A manifest whose proof was cut short is marked unproven (no mark in
+//!      `proofs/`) and proven by the next backup.
+//!  11. A drill passes only on the newest manifest, and only if it reaches
+//!      the last head recorded good (`drill`).
 //! ```
 
 use serde::{Deserialize, Serialize};

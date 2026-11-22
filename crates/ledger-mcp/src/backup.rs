@@ -30,10 +30,14 @@
 //!      last error is its last write's, or a later failed cut's.
 //!   4. Nothing here names a path of the data root to an agent.
 //!   5. A backup that holds a backup is drilled (ledger_store::backup::
-//!      drill: its books built and proven whole, its journal the live one's
-//!      beginning) once DRILL_EVERY has passed since its last good drill, or
-//!      RETRY_AFTER since a failed one (at the server's next look for
-//!      drills); a failed drill is said in the standing until one passes.
+//!      drill: the newest manifest's books built and proven whole, its
+//!      journal the live one's beginning, and reaching the head of the last
+//!      backup recorded good; an older manifest that proves while the newest
+//!      does not is a failure, in words) once DRILL_EVERY has passed since
+//!      its last good drill, or RETRY_AFTER since a failed one (at the
+//!      server's next look for drills); a failed drill is said in the
+//!      standing until one passes. A backup is recorded good only after the
+//!      store proved it (ledger_store::backup INVARIANT 10).
 //!   6. A destination whose write failed lately (RETRY_AFTER) is left out of
 //!      a backup after a write; a destination's backup is begun only while
 //!      it never took one of these books (one gone since is a disk not
@@ -80,8 +84,13 @@
 //!      books server's INVARIANT 10 (local.rs).
 //!  11. The passphrase's key is read from the book's `local/` folder at each
 //!      run: with one there, every write is sealed; one that is there and
-//!      can't be read stops the write (never a plain one). The key never
-//!      reaches a record, an error or a status.
+//!      can't be read stops the write (never a plain one); one that is not
+//!      there, when the record (what the last set-up chose, the last push's
+//!      `sealed`) or, with no record, the folder itself says the backups are
+//!      sealed, stops the write and asks for the passphrase (`key_missing`):
+//!      plain is written only after the person removes the passphrase. The
+//!      key never reaches a record, an error or a status; its fingerprint,
+//!      which opens nothing, does.
 //!  12. Old forms are left alone and said once: a private repository named
 //!      by the books' old setting is no longer used, and the old backup
 //!      history in the book's folder is neither read, written nor removed;

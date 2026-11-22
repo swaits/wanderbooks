@@ -11,8 +11,19 @@ You choose the folder once (in the window: **Back up to...**): another disk, a
 USB drive, a folder on your network, or a folder your cloud drive keeps in sync
 (Dropbox, iCloud Drive, OneDrive, Google Drive). Your books then back
 themselves up a little after each change, when they open and before they
-close; **Back up now** does it at once. A backup that is more than a day behind
-is flagged, and once a week your books prove they can be restored from it.
+close; **Back up now** does it at once. Every backup is read back and checked
+before it is counted as good. A backup that is more than a day behind is
+flagged, and once a week your books prove they can be restored from it: the
+newest backup, in full. If the newest backup is damaged, that check fails and
+says so, even when an older backup is still whole.
+
+**If the folder is kept in sync by Dropbox, iCloud Drive, OneDrive, Google
+Drive or the like:** use that folder from one computer only (two computers
+backing up into one synced folder can overwrite each other's work; a second
+computer needs a folder of its own), and keep it available offline, not online
+only. A file that is online only and not yet on this computer reads as "not
+downloaded yet", never as damage: the backup waits, and nothing is written
+over it. The set-up and the Backups window say this too.
 
 ## What is in it
 
@@ -20,11 +31,12 @@ One folder for your books, inside the folder you chose:
 
 ```text
 Backups/                          the folder you chose
-  acme/                           your books (the name you gave them)
+  wanderbooks-acme/               your books (wanderbooks- and the name you gave them)
     READ-ME.txt                   a few words about the folder
     manifests/
       000001.json                 one per backup that changed something
       000002.json
+    proofs/000001                 a mark that a backup was read back and proven
     journal/000001-..., 000002-... the journal, in pieces
     access/000001-...             who reached the books, in pieces
     files-index/000001-...        which receipts and files there are
@@ -36,11 +48,44 @@ Files are only ever **added**. Nothing in the folder is changed or deleted by
 Wanderbooks, so a sync service never sees a file change under it, and an earlier
 state of your books is always still there. A backup counts as complete only
 when its small manifest file is in place, written last; an interrupted backup
-leaves a few unused files and the last complete backup is still whole. Two
-computers backing up to one folder cannot damage it either: whichever writes
-the next manifest first wins, and the other goes on from there. If the folder
-turns out to hold a different set of books under the same name, or a newer
-copy of these than this computer has, Wanderbooks says so and writes nothing.
+leaves a few unused files and the last complete backup is still whole. A
+manifest lists the one before it and what is new, and one in sixty-four lists
+everything again, so a folder of thousands of backups stays small (3,000 backups
+took 12 MB of manifests, the newest 0.8 KB). Two computers backing up to one
+folder cannot damage it either: whichever writes the next manifest first wins,
+and the other goes on from there (but see above: one computer per synced
+folder).
+
+**What "backed up" means.** After each backup Wanderbooks reads the new manifest
+back from the folder and checks it: every piece of the journal and the access
+log is read again and its checksum checked, the journal's chain is replayed to
+its end, your books are opened from it, the vault and its key are there, and the
+receipts and files that backup added are read again together with a sixteenth
+of the others, so **every receipt and file is read again within sixteen
+backups** (the weekly check reads all of them). Only then is the backup counted
+as good. If a file in the folder turns out to be damaged (a bad sector, a bad
+sync), the next backup writes that file again beside it under a new name ending
+`.g1`, uses the good one from then on, and the Backups window lists the damaged
+file as found and written again. The damaged file stays where it is, because
+Wanderbooks never deletes anything in the folder: you may delete it yourself.
+
+**If your books are behind the folder.** If you restored your books from an
+older backup (or a backup file) and then point them at the folder that holds a
+longer history of them, Wanderbooks says so and writes nothing: *the backup
+folder holds a longer history of these books than this computer has*. To carry
+on with the books you have, choose **Start a new backup set here** in the
+Backups window (or `wanderbooks books back-up ID --new-set`): a new set
+(`wanderbooks-acme.2`) begins beside the old one, which stays in the folder,
+untouched, and later backups go to the new one. If instead the folder holds
+other books, or a history that has diverged from yours, Wanderbooks says so and
+writes nothing.
+
+**If the passphrase key is lost.** Your computer keeps the passphrase's key
+privately. If that file is lost while the folder's backups are sealed,
+Wanderbooks stops, writes nothing, and asks for the passphrase again in the
+backup settings: it never quietly writes an unprotected copy of your books into
+a folder you protected. Backups are written without protection only after you
+choose **Take the passphrase off**.
 
 If your disk is short of room, you may delete the whole folder of your books
 (never parts of it) once you have another backup.
@@ -70,8 +115,11 @@ is sealed if your backups are. A file by the same name is never overwritten.
 
 **Restore...** takes the backup folder you chose (or the folder of one set of
 books inside it), or a .wbbackup file. It checks everything first and shows you
-what it found: how far the books go, how many files, whether it needed to skip a
-newer backup that was damaged. Only then does it put your books back, as new
+what it found: how far the books go, how many files. If the newest backup in the
+folder is damaged and this restore would use an older one, the first thing it
+says, in bold, is **NOT THE NEWEST BACKUP**, with how many newer backups it passes
+over, when this backup was made, when the newest was, and that anything written
+after this backup is not in it. Only then does it put your books back, as new
 books, or in place of books with the same name (those are kept whole in a
 `legacy` folder, never deleted).
 

@@ -104,17 +104,11 @@ and `IPAddressDeny=any` with `IPAddressAllow=localhost`, and no seccomp or
 Landlock lines (D-32, D-51).
 
 The loopback-only rule is deliberate: the server reaches nothing out. A
-book whose backup target is a **remote** git repository needs that host
-allowed, or its backups fail:
-
-```ini
-# /etc/systemd/system/wanderbooks-server.service.d/backup.conf
-[Service]
-IPAddressAllow=203.0.113.10
-```
-
-A backup to a folder on this machine needs nothing. The tunnel and Caddy
-run as their own services and reach 127.0.0.1:7411, which the rule allows.
+backup is a folder of plain files (docs/backups.md): a folder on this
+machine's disks needs nothing, and nothing else is installed for it. (A
+folder on a network share the machine mounts is a disk to the server, and
+the mount, not the server, reaches the network.) The tunnel and Caddy run as
+their own services and reach 127.0.0.1:7411, which the rule allows.
 
 ## 5. A token for each client
 
@@ -221,7 +215,7 @@ a last backup and closes (3.9), so `TimeoutStopSec=600` is generous rather
 than needed.
 
 Backups still run on their own, from the books' settings, as on the
-desktop (3.7, D-30, D-31); this machine runs git itself.
+desktop (3.7, D-91): plain files in a folder, written by the server.
 
 ## 9. Prove the boundary (what CI runs)
 

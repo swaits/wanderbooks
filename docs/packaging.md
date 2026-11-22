@@ -280,7 +280,7 @@ entry, icon, licences).
 | Books | `%LOCALAPPDATA%\wanderbooks` | `~/Library/Application Support/wanderbooks` | `~/.local/share/wanderbooks` (unchanged) |
 | Removal leaves the books | the uninstaller names no data folder | dragging to Trash runs nothing | no package script runs |
 | No console window | built for the GUI subsystem; attaches to a terminal for commands | n/a | n/a |
-| Without git | says how to get Git for Windows | says `xcode-select --install`; the system's stub is not taken for git | says the package manager's command |
+| Backups | plain files; nothing to install | plain files; nothing to install | plain files; nothing to install |
 
 **Why NSIS written by hand, not cargo-packager's.** The installer's rules
 (per user, one program, an uninstaller that can never reach the books) are
@@ -320,30 +320,6 @@ icon);
 `wanderbooks.cmd`/PATH setup so a terminal waits for a command on Windows (a
 GUI-subsystem program returns the prompt at once); a macOS refusal for a program
 run from a mounted disk image (a path under `/Volumes` may be a real install on
-another disk); bundling git on Windows and macOS (the owner's decision, below); the signed `manifest.json` of the earlier self-update
+another disk); the signed `manifest.json` of the earlier self-update
 (needs the release key, Q-4).
 
-### Bundling git (an owner decision, not made here)
-
-Backups run the system's git. **Linux:** the packages now depend on git, so the
-package manager fetches it (nothing is bundled). **Windows and macOS:** the app
-detects a missing git and says how to get it (WB-pkg-4); nothing is bundled.
-
-What bundling would mean. Git is GPL-2.0-only free software. Shipping an
-unmodified git as a separate file that our program starts as its own process
-(never linked) is what the GPL calls aggregation: our MIT OR Apache-2.0 code is
-unaffected, and AGENTS.md's clean-room rule (never copy GnuCash's code) is not
-touched, since nothing of git is copied into ours; `deny.toml` governs Rust
-crates only and does not see it. It still requires, for each release that
-carries git: git's GPL text and copyright notices beside it (Git for Windows'
-MinGit adds the notices of the components it carries: OpenSSL/curl, the MSYS2
-runtime); the corresponding source of exactly that git, or a written offer for it
-valid three years (GPLv2 section 3), most simply the git version's source
-archive attached to the same release; no term of ours that forbids the
-recipient what the GPL permits; and a note of any change if git were modified.
-`THIRD-PARTY-NOTICES.txt` (cargo-about) covers Rust crates only, so it would
-need an addition. On Windows the candidate is MinGit from Git for Windows
-(about 40 MB, unpacked beside the program; `Git::find` would look there first);
-on macOS Apple's command line tools' git is Apple's and cannot be bundled, so
-it would be a build of our own (Homebrew's, or from source), universal, signed
-inside the app, with the same obligations.

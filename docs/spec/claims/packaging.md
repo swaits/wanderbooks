@@ -88,21 +88,14 @@ earlier staged update still works; no release key exists yet, so today none does
 `update.rs` (`a_macos_app_is_never_updated_in_place`); `ledger-gui`
 `tests/update_notice.rs` (`a_newer_version_is_told_with_where_to_get_it`).
 
-**WB-pkg-4 Without git, backups are off and the person is told how to get
-it.** Backups run the system's git; the program carries none. With no git found, a
-backup says so in plain words for the system it runs on (Git for Windows or winget; Apple's
-command line tools or Homebrew; the package manager) and the books work as
-ever; the next backup looks again, so installing git needs no restart. On a Mac
-without the developer tools, the stub at the system's git path is not taken for a
-git. Whether to ship a git with the app is the owner's decision, since git is
-GPL-2.0-only free software and shipping it carries a source offer and notices.
-*Enforced:* `ledger_store::backup::how_to_get_git`,
-`ledger_store::backup::Git::find`.
-*Checked:* `ledger-store` unit tests in `backup.rs`
-(`a_missing_git_says_how_to_get_it`,
-`the_mac_stub_is_not_a_git_until_the_developer_tools_are_there`);
-`ledger-cli` `tests/packaging.rs`
-(`the_linux_packages_depend_on_git_and_none_carries_one`).
+**WB-pkg-4 Backups need nothing installed.** A backup is a folder of plain files
+the program writes itself (WB-backup-1), so no package depends on another program
+for it, none carries one, and no backup asks the person to install anything. This
+replaces the rule that backups ran the system's git and said how to get it (D-91).
+*Enforced:* `deploy/packaging/packager.toml`, `deploy/packaging/aur/PKGBUILD` and
+`crates/ledger-cli/Cargo.toml` name no such dependency.
+*Checked:* `ledger-cli` `tests/packaging.rs`
+(`no_package_depends_on_another_program_for_backups`).
 
 **WB-pkg-5 The Connect page can write a one-click Claude desktop extension
 for a company.** The "Claude desktop app" row has one button. It makes the

@@ -378,27 +378,21 @@ didn't open, with why). Protocol version 1: the requests are new, the
   (a drill, or a format upgrade not yet journaled, is stopped when the
   close begins, at its next look, so it never takes the last backup's
   turn; its scratch clone is removed and the books are unchanged):
-  a backup still running after that is stopped (git is sent SIGTERM, which
-  makes it remove its own lock files, and killed with all it started only
-  if it hasn't ended after 5 seconds) and waited for to end. The program
-  never writes to or deletes from a backup folder (it is the owner's, and
-  may be shared with other computers or a sync program): a lock git left
-  there when it had to be killed is left in place, recorded in
-  `ops/backup.jsonl` as `lock_left` with its whole path, and the target's
-  backup is marked failed with words naming the file and saying to remove
-  it only when nothing else is using the backup folder (`books.backup`
-  and the close's answer say the same; the next backup that finds the
-  lock gone goes on). In the book's own archive (`archive.git`, private to
-  the program; running git by hand inside it is unsupported) it removes
-  only the locks its own stopped git made, and, at open and when a backup
-  begins, locks older than ten minutes, each recorded `lock_removed`;
+  a backup still running after that is stopped (its copy of files
+  stops at the next piece, or the next 64 KiB of one) and waited for to
+  end. The program never rewrites or deletes anything in a backup folder
+  (it is the owner's, and may be shared with other computers or a sync
+  program): a backup stopped part way leaves pieces no manifest names and
+  the folder proves whole at its previous manifest, so there is nothing to
+  clean up and nothing to remove by hand.
   **What a close stops, and what it waits for.** At its start a close
   stops the calls and jobs that can do long I/O or loop over a book's
   whole journal or files, each at its next look: `books.back_up_now` and
-  a backup a timer asked for (git is stopped; the call answers that it was
-  stopped because the books are closing, its access record says
+  a backup a timer asked for (its copy is stopped; the call answers that it
+  was stopped because the books are closing, its access record says
   `refused: stopped_by_close`, and nothing it was doing is recorded as done;
-  a commit it had made stands), `books.verify` (once per journal line and
+  what it had written stands, and the folder still proves whole at its
+  previous manifest), `books.verify` (once per journal line and
   per stored file; a heal of a drifted database is begun only if no stop
   was asked before it, then finishes), `books.export_cpa_package` (once per
   stored file, unless it has journaled a decision, below), a drill, and a
@@ -1329,75 +1323,74 @@ through the policy.
 
 ## Tools — backups
 
-Books back themselves up (plan 3.7, D-30,
-D-31): each keeps `archive.git`, a bare repository whose commits are its
-journal, stored files, vault, keys and access log as they were (one
-commit per backup, made under the store's lock, its message
-`seq N head H` and, below, `book <id>`), pushed fast-forward only to the targets the settings
-name: `backup.git_remote` (the owner's private repository) and
-`backup.folder` (a repository `<book>.git` in a folder on another disk).
-Not encrypted: the destinations keep it private. Backups run a little
-after the books are last written (`--backup-quiet`, 30 s), when they
-open, before they close, and on request; a failed one is retried after
-15 minutes. Each target is drilled weekly: cloned, its chain replayed,
-every stored file re-hashed, every TIN record the books name there with
-its key, its head the one its commit records, its journal a byte prefix
-of the live one (a failed drill is tried again at the server's next
-hourly look, once 15 minutes have passed). A backup's tree is checked
-before any of it is written out: plain files under the backed-up paths
-only, never a link or a submodule. git runs with no hooks (in a
-repository on this computer it pushes to as well), no ignore or
-attributes rules of anyone's (a `.gitattributes` in a book's folder
-refuses the backup) and no command-running transports; a repository on
-this computer is used only if plain (a bare repository at that very
-path, no settings of its own but where a copy came from, nothing sending
-git elsewhere, no link where it or its parts are), and a backup folder that took backups and is gone is
-reported as a disk not connected, never made again (restored books count
-the backups of the books they were). Books restored beside the books they
-were (under another id) don't push to those books' repository, which
-would stop theirs: `books.backup` says it is paused for them until
-another is named. A damaged backup record is set aside and begun again;
-it never keeps the books shut. One book's drill holds the others'
-backups until it ends (a backup at close waits at most a minute for
-it). A target
-whose push failed is left out of the backups after writes for 15
-minutes, then tried again, written to or not; the other targets don't
-wait for it. Every
-commit, push and drill is a record in the book's `ops/backup.jsonl` (a
-chain log; a backup never moves the books' head), each target's records
-keyed by the target itself. Setting `backup.*` (books.set_setting) needs
-books:admin, as
-backing up does: a backup is the whole book, its vault and key included.
+Books back themselves up (plan 3.7, D-91, D-92): to the folder the settings
+name, `backup.folder` (a folder on another disk, or one a sync service
+keeps), as plain files written once (docs/backups.md): a folder for the
+books holding a read-me, a `manifests/` folder, and the pieces the manifests
+name, the journal and the access log as numbered segments, an index of the
+stored files and the files themselves under their hash, the vault and keys
+by content hash. The manifest is written last and makes a backup complete;
+nothing in the folder is ever rewritten or deleted. Taking a backup holds
+the store's lock only to cut the books (the journal's length and head, the
+vault, the keys); the files are written after it. With a passphrase (D-92,
+set up in the window; off by default) every file is sealed with
+XChaCha20-Poly1305, the key derived with Argon2id (64 MiB, 3 passes, 1
+lane), names say no more than counts and sizes, and the key is kept on this
+computer only. Backups run a little after the books are last written
+(`--backup-quiet`, 30 s), when they open, before they close, and on request;
+a failed one is retried after 15 minutes. The folder's backup is drilled
+weekly: its books built and proven whole, every stored file re-hashed, every
+TIN record the books name there with its key, its head the one its manifest
+records, its journal a byte prefix of the live one (a failed drill is tried
+again at the server's next hourly look, once 15 minutes have passed). A
+backup is written only onto a folder whose newest whole manifest is a point
+on the live journal; one holding other books, another history, or more than
+these books have is said, and nothing is written. A backup folder that took
+backups and is gone is reported as a disk not connected, never made again
+(restored books count the backups of the books they were). Books restored
+under another id back up to a folder of their own in the same place. A
+damaged backup record is set aside and begun again; it never keeps the books
+shut. A folder whose write failed is left out of the backups after writes
+for 15 minutes, then tried again. Every cut, write and drill is a record in
+the book's `ops/backup.jsonl` (a chain log; a backup never moves the books'
+head), the folder's records keyed by the folder and the passphrase. Setting
+`backup.*` (books.set_setting) needs books:admin, as backing up does: a
+backup is the whole book, its vault and key included. Books that still name
+a private repository (`backup.git_remote`, an older kind of backup) work as
+ever; `books.backup`'s `note` says it is no longer used, and an older backup
+history in the book's folder is left alone and said once.
 
 - `books.backup {}` (books:read) → `{ head_seq, targets: [{ target:
-  "repository" | "folder", at, last_ok_at, through_seq, stale,
-  last_error, last_drill_at, drill_error, paused }], note }`. `paused`:
-  not backed up there, these books being restored as a copy of others
-  (its `last_error` says so). `stale`: the target
+  "folder", at, last_ok_at, through_seq, stale, last_error,
+  last_drill_at, drill_error, sealed, disconnected }], note }`.
+  `sealed`: protected by a passphrase. `disconnected`: its disk isn't
+  there. `stale`: the target
   lacks the head, and the first try to back up what it lacks (since its
   last good backup, or ever) is more than a day old. `last_error`: its
-  last push's, or a later failed commit's. `note`
-  says what to set when no target is. `books.start` adds a next step when
-  none is set up, or one is stale, failing, paused or failed its drill.
+  last write's, or a later failed cut's. `note`
+  says what to set when no folder is, and what older settings or history are
+  no longer used. `books.start` adds a next step when none is set up, or the
+  folder is stale, failing or failed its drill.
 - `books.back_up_now { new_disk? }` (books:admin) → the same, after
-  backing up to every target now. `new_disk`: the backup folder's disk is
+  backing up to the folder now. `new_disk`: the backup folder's disk is
   new, so a folder that took these books' backups and holds none now is
   begun again (otherwise it is a disk not connected). The one tool whose
-  `openWorldHint` is true. A target paused for books restored as a copy
-  of others shows `paused` (and is no failure to retry).
+  `openWorldHint` is true.
 
-Restoring is the owner's, from a terminal: `wanderbooks books restore
-BACKUP [--id ID] [--replace] [--yes]` (the admin socket's `restore`,
-previewed then confirmed against the previewed head; without `--id`, the
-books keep the id of the books the backup holds, which the preview names,
-else the repository's name; under another id they are a copy, and don't
-push to those books' repository). The backup is
-cloned into the root, proven whole as a drill proves it (but for the
-live-journal check: there may be no live books), and built as an
-adoption builds; it arrives as new books, or replaces books (`--replace`,
-which are let go and moved whole into `legacy/<id>-<time>/`). The
-restored books keep the backup's history, so their next backups carry
-on from it.
+Restoring is the owner's, in the window (Restore...) or from a terminal:
+`wanderbooks books restore BACKUP [--id ID] [--replace] [--yes]` (the admin
+socket's `restore`, previewed then confirmed against the previewed head;
+without `--id`, the books keep the id of the books the backup holds, which the
+preview names). BACKUP is the backup folder, the folder of one set of books in
+it, or a backup file (`.wbbackup`); a sealed one asks for its passphrase
+(unechoed at a terminal, never on the command line). The backup is built in
+the root, proven whole as a drill proves it (but for the live-journal check:
+there may be no live books), and built as an adoption builds; it arrives as
+new books, or replaces books (`--replace`, which are let go and moved whole
+into `legacy/<id>-<time>/`). If the newest backup in the folder is damaged,
+the newest whole one is the one previewed, and the preview says so. A sealed
+backup's restored books keep backing up sealed, to the same folder, from this
+computer.
 
 ## Tools — payouts
 

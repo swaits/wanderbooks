@@ -487,9 +487,8 @@ already running with other flags keeps them; on a self-host machine
 `serve` is the unit's only holder.
 
 The unit sets `IPAddressDeny=any` and `IPAddressAllow=localhost`: the
-server reaches nothing out. A book whose backup target is a remote git
-repository therefore needs that host allowed in a drop-in (D-31 backups
-still run on the server). The recipe, the head check for the move and the
+server reaches nothing out. Backups go to a folder on the machine's own
+disks and need no network (D-91). The recipe, the head check for the move and the
 two-account CI job are in `deploy/README.md`, `deploy/wanderbooks-server.service`
 and `.github/workflows/two-user.yml`; the checks are
 `crates/ledger-cli/tests/two_user.rs`.

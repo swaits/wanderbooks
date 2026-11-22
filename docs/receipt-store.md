@@ -28,19 +28,20 @@ easily backupable, journable":
   journals a `journal.tail_repaired` line; `books.digest` reports it.
   Damage before the last newline is corruption and refuses to open: that
   is for a human, never repaired automatically. The server does better
-  (plan 3.7): it commits the journal, the blobs, the vault, its key and
-  the access log to each book's own git repository (the blobs staged
-  ahead, the commit under the store's lock) and pushes it to the
-  owner's private repository and backup folder, versioned and
-  deduplicated, with full history (docs/mcp-interface.md, "Tools —
-  backups"). The program stops its git gently (SIGTERM first, so git
-  removes its own lock files, and a kill only after 5 seconds), and never
-  writes to or deletes from a backup folder, which is the owner's (shared,
-  perhaps, with another computer or a sync program): a lock git left
-  there after a kill is reported with its path, never removed. The book's
-  own archive (`archive.git`) is private to the program; there it removes
-  only the locks its own stopped git made, and locks older than ten
-  minutes found when the books open or a backup begins.
+  (plan 3.7, D-91): it backs the journal, the stored files, the vault, its
+  key and the access log up to a folder the owner chooses, as plain files
+  that are written once and never changed or deleted (docs/backups.md, and
+  docs/mcp-interface.md, "Tools — backups"): the journal and the access log
+  as numbered segments, each stored file once under its hash, and a
+  manifest, written last, that says which pieces make a backup whole. The
+  books' lock is held only to take a cut of the journal's length and the
+  vault; the files are written after it. With a passphrase (D-92) every file
+  is sealed. Nothing is installed for it, and nothing in the backup folder
+  is ever deleted or rewritten by the program, which is the owner's (shared,
+  perhaps, with another computer or a sync program). The book's own
+  folder keeps a local backup of the same form (`local-backup/`) made
+  before a format upgrade. The old history older versions kept in the book's
+  folder is left where it is, unread and unwritten.
 - **Journable.** It literally is a journal: `{seq, ts, type, payload, prev}`.
   Greppable, diffable, replayable. The audit trail isn't a feature bolted
   on — it's the storage format.

@@ -5,13 +5,13 @@
      The app is signed with the hardened runtime (codesign --options
      runtime), which Apple's notarization requires. It is NOT sandboxed
      (the App Sandbox would forbid what the product is: it starts a copy of
-     itself as the books server, runs the system's git for backups, and
+     itself as the books server, and
      reads and writes the person's data folder and the folders they pick
      for backups). Outside the sandbox, none of that needs an entitlement:
 
-       * starting itself as a child process and git as another: none;
-       * outgoing network connections (the relay, the update look, a git
-         remote): none (com.apple.security.network.client is a SANDBOX
+       * starting itself as a child process: none;
+       * outgoing network connections (the relay, the update look): none
+         (com.apple.security.network.client is a SANDBOX
          entitlement);
        * reading and writing its data folder, Application Support/wanderbooks:
          none (the Documents folder is a privacy prompt, answered by

@@ -1236,3 +1236,118 @@ async fn old_settings_and_an_old_backup_history_are_left_alone_and_said() {
     drop(c);
     assert!(server.close().success());
 }
+
+/// docs/backups.md, "A backup made with an older version": a person who
+/// still has a backup made with git clones it themselves (git is their own
+/// tool now) and adopts the plain folder. This makes such a backup the way
+/// an older version did (a repository whose one commit is the books'
+/// files), clones it as the docs say, and adopts the clone with its vault
+/// and key as the docs say.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clone_of_an_old_git_backup_is_adopted_as_a_plain_folder() {
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
+            .args(args)
+            .output();
+        match out {
+            Ok(o) => {
+                assert!(o.status.success(), "{args:?}: {o:?}");
+                true
+            }
+            // No git on this machine: the path is the person's own tool's.
+            Err(_) => false,
+        }
+    };
+    let home = Home::new("old-backup");
+    let server = Server::start(&home, Duration::from_secs(3600));
+    home.create("acme");
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    call(
+        &c,
+        "books.add_party",
+        json!({"name": "Mo", "roles": ["member"]}),
+    )
+    .await
+    .unwrap();
+    call(
+        &c,
+        "books.set_tin",
+        json!({"party": "Mo", "tin": "12-3456789", "tin_type": "ein"}),
+    )
+    .await
+    .unwrap();
+    let (folder, want) = backed_up_acme(&home).await;
+    drop(c);
+    assert!(server.close().success());
+    // The old backup: the books' files, committed, in a bare repository.
+    let book = home.book_dir("acme");
+    let work = home.outside("old-work");
+    std::fs::create_dir_all(&work).unwrap();
+    for part in ["journal.jsonl", "blobs", "vault", "keys", "access.jsonl"] {
+        let from = book.join(part);
+        if from.is_dir() {
+            copy_dir(&from, &work.join(part));
+        } else if from.is_file() {
+            std::fs::copy(&from, work.join(part)).unwrap();
+        }
+    }
+    if !git(&work, &["init", "-q", "-b", "main"]) {
+        return;
+    }
+    git(&work, &["add", "-A", "-f"]);
+    git(&work, &["commit", "-q", "-m", "seq 1 head x\n\nbook acme"]);
+    let bare = home.outside("acme.git");
+    let out = Command::new("git")
+        .args(["clone", "-q", "--bare"])
+        .arg(&work)
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    // The person's steps: clone it, then adopt the folder with its vault
+    // and key.
+    let clone = home.outside("acme-old");
+    let out = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&bare)
+        .arg(&clone)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let other = Home::new("old-backup-new");
+    let server = Server::start(&other, Duration::from_secs(3600));
+    let request = |confirmed: bool, expect_head: Option<(u64, String)>| Request::Adopt {
+        id: "acme".into(),
+        source: clone.clone(),
+        settings_toml: None,
+        config_json: None,
+        vault_dir: Some(clone.join("vault")),
+        vault_key: Some(clone.join("keys").join("legacy.key")),
+        confirmed,
+        expect_head,
+        skip_unknown: false,
+    };
+    let preview = match other.admin(request(false, None)) {
+        Response::Preview(p) => p,
+        r => panic!("{r:?}"),
+    };
+    match other.admin(request(true, Some(preview.source_head))) {
+        Response::Adopted(a) => {
+            assert!(a.problem.is_none(), "{a:?}");
+            assert_eq!(a.head, live_head(&home, "acme"));
+        }
+        r => panic!("{r:?}"),
+    }
+    let c = connect(&other, "acme", other.token("acme", &["read"])).await;
+    assert_eq!(figures(&c).await, want);
+    let party = call(&c, "books.party", json!({"party": "Mo"}))
+        .await
+        .unwrap();
+    assert_eq!(party["party"]["tin"]["in_vault"], true, "{party}");
+    drop(c);
+    assert!(server.close().success());
+    let _ = folder;
+}

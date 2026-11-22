@@ -1294,7 +1294,7 @@ pub fn find_with(
                 count(ids.len(), "stored file is", "stored files are")
             ),
             detail: format!(
-                "Attachment {}: the bytes on disk don't match their recorded hash. Restore them from a backup (the books dir's git history).",
+                "Attachment {}: the bytes on disk don't match their recorded hash. Restore them from a backup.",
                 ids.join(", ")
             ),
             target: Target::Documents,

@@ -23,8 +23,8 @@ close the window: that quits Wanderbooks fully and closes your books.
 
 Where things are: the program is in `%LOCALAPPDATA%\Programs\Wanderbooks`; your
 books, keys and backups are in `%LOCALAPPDATA%\wanderbooks`.
-Backups need Git for Windows (https://git-scm.com/download/win, or `winget
-install --id Git.Git -e`); without it Wanderbooks works and says so.
+Backups need nothing installed: choose a backup folder in Wanderbooks
+(another disk, or a folder your cloud drive keeps in sync).
 
 ## macOS
 
@@ -38,8 +38,9 @@ install --id Git.Git -e`); without it Wanderbooks works and says so.
    remove it, drag it to the Trash. Neither touches your books.
 
 Your books, keys and backups are in `~/Library/Application Support/wanderbooks`.
-Backups need git: run `xcode-select --install` in Terminal (or `brew install
-git`).
+Backups need nothing installed: choose a backup folder in Wanderbooks
+(another disk, or a folder iCloud, Dropbox, OneDrive or Google Drive keeps in
+sync).
 
 ## Linux
 
@@ -48,8 +49,8 @@ Ubuntu), the `.rpm` (Fedora), the Arch package, or the AppImage (one file: mark
 it executable, keep it where you put it, and run it). Open **Wanderbooks** from
 the menu. To update, install the newer package, or replace the AppImage. Your
 books are in `~/.local/share/wanderbooks` and are never touched by a package.
-Backups need git (`sudo apt install git`, `sudo dnf install git`,
-`sudo pacman -S git`).
+Backups need nothing installed: choose a backup folder in Wanderbooks
+(another disk, or a folder your sync program keeps).
 
 ## After it is installed
 

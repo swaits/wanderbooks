@@ -770,7 +770,7 @@ fn books_usage(prog: &str) {
         "  back-up back the books up now to every backup their settings name (--new-disk: the backup folder's disk is new)"
     );
     eprintln!(
-        "  restore bring back a backup (a git repository's address, or BOOK.git in the backup folder), proven whole first: as new books, or replacing books (kept in legacy/)"
+        "  restore bring back a backup (your backup folder, the folder of one set of books in it, or a backup file), proven whole first: as new books, or replacing books (kept in legacy/)"
     );
     eprintln!(
         "  upgrade give the go-ahead, with the owner passphrase, for books an older wanderbooks wrote to move to this version's journal format (a verified backup with the vault and keys first)"
@@ -779,7 +779,7 @@ fn books_usage(prog: &str) {
         "  extract read one attachment's text (a PDF, XLSX or text file) and journal it, one at a time; books an older version filed are read this way after an upgrade"
     );
     eprintln!(
-        "  put-aside move the old copies of adopted books (their data folder, their vault and its key, and other paths given: settings file, git history) whole into the legacy folder, once the books hold everything they do, byte for byte; nothing is deleted"
+        "  put-aside move the old copies of adopted books (their data folder, their vault and its key, and other paths given: settings file, old history) whole into the legacy folder, once the books hold everything they do, byte for byte; nothing is deleted"
     );
 }
 

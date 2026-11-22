@@ -221,7 +221,11 @@ INVARIANTS:
      listed authority, `issue "<caa_domain>; validationmethods=dns-01"`
      (RFC 8657), from each authority's `caa_domain` in the same list, so
      swapping authorities is an edit to one file; with no authority
-     listed there is no CAA record.
+     listed there is no CAA record. The relay's own host alone has a set
+     of its own, the same authorities with no method restriction, so its
+     certificate can be had by HTTP-01 and renewed by certbot's timer; no
+     other name below the apex has one, so an app's name still climbs to
+     the apex and DNS-01.
 SCENARIOS:
   1. Two apps each publish; each name answers its own value and not the
      other's; a bad value is refused; clearing removes only one's own.
@@ -239,7 +243,7 @@ SCENARIOS:
 ```
 
 *Enforced:* `serve_control`, `TxtStore::publish`, `TxtStore::get`, `DnsService::answer`, `serve_udp`, `serve_tcp`, `AuthorityList::for_app`, `AuthorityList::caa_issuers`, `AuthorityList::reload`, `DnsService::truncated`, `is_proof_value`.
-*Checked:* `relay` `tests/relay.rs` (`a_proof_record_is_published_for_ones_own_name_and_no_other`, `publishing_needs_a_proven_line`, `the_authority_list_is_served_and_follows_the_file`, `no_shared_binding_secret_is_ever_served`, `dns_over_udp_over_the_rate_is_answered_truncated`, `dns_over_udp_has_a_global_ceiling`, `dns_over_tcp_is_capped_and_times_out`); unit tests in `src/dns.rs` (`every_name_under_the_zone_is_at_the_relay_even_beneath_a_label_with_a_record`, `the_proof_record_is_answered_for_its_own_name_until_it_expires`, `outside_the_zone_is_refused_and_odd_queries_are_answered_plainly`, `garbage_never_panics_and_is_mostly_ignored`, `caa_at_the_apex_permits_the_listed_authorities_by_dns_01_only`, `caa_is_made_from_the_list_and_follows_it`, `the_truncated_answer_is_the_question_with_the_tc_bit_and_nothing_more`), `src/txt.rs` (`a_value_is_answered_until_its_ttl`, `only_proof_values_are_taken`, `values_per_name_and_names_in_all_are_bounded`, `publishes_are_counted_per_hour`) and `src/authorities.rs` (`the_list_is_served_in_order_and_a_binding_comes_only_from_a_source`, `a_list_file_that_carries_a_binding_secret_is_refused_in_words`, `a_bad_list_is_refused`, `an_edit_changes_what_is_served_and_a_bad_edit_does_not`, `a_binding_source_is_asked_only_for_authorities_that_need_one`).
+*Checked:* `relay` `tests/relay.rs` (`a_proof_record_is_published_for_ones_own_name_and_no_other`, `publishing_needs_a_proven_line`, `the_authority_list_is_served_and_follows_the_file`, `no_shared_binding_secret_is_ever_served`, `dns_over_udp_over_the_rate_is_answered_truncated`, `dns_over_udp_has_a_global_ceiling`, `dns_over_tcp_is_capped_and_times_out`); unit tests in `src/dns.rs` (`every_name_under_the_zone_is_at_the_relay_even_beneath_a_label_with_a_record`, `the_proof_record_is_answered_for_its_own_name_until_it_expires`, `outside_the_zone_is_refused_and_odd_queries_are_answered_plainly`, `garbage_never_panics_and_is_mostly_ignored`, `caa_at_the_apex_permits_the_listed_authorities_by_dns_01_only`, `caa_at_the_relay_host_permits_the_listed_authorities_by_any_method`, `no_authority_list_means_no_caa_even_at_the_relay_host`, `caa_is_made_from_the_list_and_follows_it`, `the_truncated_answer_is_the_question_with_the_tc_bit_and_nothing_more`), `src/txt.rs` (`a_value_is_answered_until_its_ttl`, `only_proof_values_are_taken`, `values_per_name_and_names_in_all_are_bounded`, `publishes_are_counted_per_hour`) and `src/authorities.rs` (`the_list_is_served_in_order_and_a_binding_comes_only_from_a_source`, `a_list_file_that_carries_a_binding_secret_is_refused_in_words`, `a_bad_list_is_refused`, `an_edit_changes_what_is_served_and_a_bad_edit_does_not`, `a_binding_source_is_asked_only_for_authorities_that_need_one`).
 
 **WB-relay-6** The app is told the caller's real address by the relay, first, in a header no caller can forge.
 

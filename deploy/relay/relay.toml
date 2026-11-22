@@ -1,0 +1,71 @@
+# Settings for the relay (docs/relay-deploy.md). Every key here is a real
+# key of `relay::Config`; a key the relay does not know stops it from
+# starting, so a typo is caught at once. Installed as
+# /etc/wanderbooks-relay/relay.toml.
+#
+# Replace each <placeholder> before starting. Times, in [limits], are in
+# milliseconds.
+
+# The domain the relay serves and is the DNS server of.
+domain = "wanderbooks.link"
+
+# The host an app's line dials. The program has this name built in, so
+# leave it as it is.
+relay_host = "relay.wanderbooks.link"
+
+# Where the router listens: TCP 443. "[::]" is every IPv6 and IPv4
+# address of the machine (Linux answers both on one socket). Use
+# "0.0.0.0:443" for IPv4 only.
+router_addr = "[::]:443"
+
+# Where DNS listens: UDP and TCP, the same number. 53 in production.
+dns_addr = "[::]:53"
+
+# The registry: the one durable table, name to the app's public key.
+# Back it up (docs/relay-deploy.md); losing it lets anyone claim a name
+# someone else holds. The state folder is made by the service unit.
+registry_path = "/var/lib/wanderbooks-relay/registry.sqlite3"
+
+# The relay's own certificate for relay.wanderbooks.link, PEM, the whole
+# chain, and its private key, PEM. The relay reads them once, when it
+# starts: a new certificate needs a restart. These are not the apps'
+# certificates; the relay holds none of those.
+tls_cert = "/etc/wanderbooks-relay/relay-cert.pem"
+tls_key = "/etc/wanderbooks-relay/relay-key.pem"
+
+# The certificate authorities offered to apps, and the zone's CAA record
+# is made from the same file (see authorities.toml). The file is read
+# again within half a minute of a change. Keep this on: without a list
+# the relay publishes no CAA record, and no app can get a certificate.
+authorities_path = "/etc/wanderbooks-relay/authorities.toml"
+
+# The addresses every name under the domain points at: this machine's
+# public addresses. Leave address_v6 empty ([]) if the machine has none.
+address_v4 = ["<server IPv4>"]
+address_v6 = ["<server IPv6>"]
+
+# The domain's name servers, as the DNS answers for them. They must be the
+# same names, with the same addresses, as the host records and NS records
+# at the registrar. Two names, because the registry of a domain wants at
+# least two; both may be this one machine.
+[[nameservers]]
+name = "ns1.wanderbooks.link"
+v4 = ["<server IPv4>"]
+v6 = ["<server IPv6>"]
+
+[[nameservers]]
+name = "ns2.wanderbooks.link"
+v4 = ["<server IPv4>"]
+v6 = ["<server IPv6>"]
+
+# Limits. Every one has a default (crates/relay/src/config.rs) sized for
+# hundreds of thousands of apps on a large machine. Only the two that
+# matter for memory are set here, for a 1 GB machine: an idle app costs
+# about 15.4 KiB (the measurement in crates/relay/tests/memory.rs).
+[limits]
+# Apps connected at once. Past this a new app is turned away until one
+# leaves. 20,000 idle lines is about 310 MiB.
+max_lines = 20000
+# Connections of every kind at once: apps' lines, assistants being
+# spliced through, and connections still saying hello.
+max_connections = 40000

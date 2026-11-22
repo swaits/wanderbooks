@@ -1,0 +1,70 @@
+# The relay for wanderbooks.link (plan P15, unit B2; docs/relay-deploy.md).
+#
+# One process, one account, two jobs: it routes an assistant's TLS
+# connection down the line an app holds open (TCP 443), and it is the
+# domain's DNS server (UDP and TCP 53). It runs as its own account with no
+# shell, and the only file it writes is its registry, in its state folder.
+#
+# Install: the binary is /usr/local/bin/wanderbooks-relay (the `relay`
+# program from `cargo build --release -p relay`), the settings are
+# /etc/wanderbooks-relay/relay.toml and the certificate files that file
+# names sit beside it. See docs/relay-deploy.md for every step.
+
+[Unit]
+Description=wanderbooks relay: routes web assistants to apps, and is the DNS of wanderbooks.link
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wanderbooks-relay
+Group=wanderbooks-relay
+DynamicUser=no
+# Makes /var/lib/wanderbooks-relay, owned by the account, and is the only
+# writable place (the registry lives there).
+StateDirectory=wanderbooks-relay
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/wanderbooks-relay
+ExecStart=/usr/local/bin/wanderbooks-relay /etc/wanderbooks-relay/relay.toml
+# The relay shuts down cleanly on SIGINT (Ctrl-C) and on nothing else: a
+# SIGTERM would end it at once. So systemd stops it with SIGINT.
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=2s
+# The relay writes its log lines to standard error; the journal keeps them.
+# One line a minute carries the counters (lines, routed, shed, ...).
+StandardOutput=journal
+StandardError=journal
+
+# Ports 53 and 443 are below 1024. This one capability lets the account
+# bind them and nothing more.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Each idle app is one open socket, and each caller in flight is another.
+# 262144 is far above what a small machine can hold in memory.
+LimitNOFILE=262144
+
+# The account and the filesystem.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

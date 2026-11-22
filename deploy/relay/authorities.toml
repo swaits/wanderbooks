@@ -1,0 +1,24 @@
+# The certificate authorities the relay offers to apps, in the order they
+# are tried, and the source of the zone's CAA record. Installed as
+# /etc/wanderbooks-relay/authorities.toml. The relay reads it again within
+# half a minute of a change; a file with a mistake is refused and the old
+# list stays in force. At most 16 entries.
+#
+# An app sends requests only to authorities compiled into it (Let's
+# Encrypt, Google Trust Services, ZeroSSL, SSL.com), so a different
+# authority here is only useful if the program already knows it.
+#
+# A binding secret (binding_kid, binding_hmac_key) is never put here: the
+# relay refuses a file that has one. An authority that needs a binding
+# (needs_binding = true) is offered as not usable, because no per-app
+# source of bindings is built yet, so only authorities that need none work.
+
+[[authority]]
+# A short name for this authority, unique in the file.
+id = "letsencrypt"
+# Its ACME directory address (RFC 8555), https, from its own documentation.
+directory = "https://acme-v02.api.letsencrypt.org/directory"
+# The name this authority goes by in a CAA record (its "issuer domain
+# name"). The relay publishes `issue "letsencrypt.org;
+# validationmethods=dns-01"` at the domain's apex from this.
+caa_domain = "letsencrypt.org"

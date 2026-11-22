@@ -42,6 +42,10 @@
 //!      which sends a real resolver to TCP and sends a spoofed source
 //!      nothing larger than its query. All UDP answers together are
 //!      limited by a global rate; past it, silence.
+//!   8. The relay's own host has its own CAA set, the same authorities with
+//!      no method restriction, so its certificate can be had by HTTP-01;
+//!      no other name below the apex has a CAA of its own, and with no
+//!      authority listed there is no CAA record anywhere.
 //!   7. The CAA answer at the apex lists exactly the authority list's
 //!      issuer domains, each with `validationmethods=dns-01`; with no
 //!      authority listed there is no CAA record.
@@ -90,6 +94,8 @@ const QUERY_MAX: usize = 1232;
 pub struct DnsService {
     zone: Zone,
     domain: DnsName,
+    /// The relay's own host, lower case, no trailing dot.
+    relay_host: String,
     v4: Vec<Ipv4Addr>,
     v6: Vec<Ipv6Addr>,
     nameservers: Vec<(String, DnsName, Vec<IpAddr>)>,
@@ -127,6 +133,7 @@ impl DnsService {
         Ok(DnsService {
             zone,
             domain,
+            relay_host: cfg.relay_host.trim_end_matches('.').to_ascii_lowercase(),
             v4: cfg.address_v4.clone(),
             v6: cfg.address_v6.clone(),
             nameservers,
@@ -138,18 +145,32 @@ impl DnsService {
     /// The CAA record set of the apex: one `issue` per listed authority,
     /// DNS-01 only (RFC 8657).
     fn caa(&self) -> Vec<Record> {
+        self.caa_set(&self.domain, true)
+    }
+
+    /// The CAA record set of the relay's own host: the same authorities,
+    /// with no method restriction, so the relay's own certificate can be
+    /// had by HTTP-01 (RFC 8555 section 8.3). A certificate authority uses
+    /// the closest record set, so this one replaces the apex's for this
+    /// one name and for no other.
+    fn caa_relay_host(&self, owner: &DnsName) -> Vec<Record> {
+        self.caa_set(owner, false)
+    }
+
+    fn caa_set(&self, owner: &DnsName, dns01_only: bool) -> Vec<Record> {
         self.authorities
             .caa_issuers()
             .iter()
             .filter_map(|issuer| {
                 let issuer = DnsName::from_ascii(issuer).ok()?;
-                let data = CAA::new_issue(
-                    false,
-                    Some(issuer),
-                    vec![KeyValue::new("validationmethods", "dns-01")],
-                );
+                let params = if dns01_only {
+                    vec![KeyValue::new("validationmethods", "dns-01")]
+                } else {
+                    vec![]
+                };
+                let data = CAA::new_issue(false, Some(issuer), params);
                 Some(Record::from_rdata(
-                    self.domain.clone(),
+                    owner.clone(),
                     TTL_ADDR,
                     RData::CAA(data),
                 ))
@@ -303,6 +324,9 @@ impl DnsService {
                 }
             }
             RecordType::CAA if apex => resp.answers = self.caa(),
+            RecordType::CAA if lower == self.relay_host => {
+                resp.answers = self.caa_relay_host(&owner);
+            }
             RecordType::TXT => {
                 if let ["_acme-challenge", name] = labels.as_slice()
                     && let Ok(name) = Name::parse(&name.to_ascii_lowercase())
@@ -735,6 +759,45 @@ mod tests {
         let below = ask(&svc, APP, RecordType::CAA, true);
         assert!(below.answers.is_empty());
         assert_eq!(below.authorities.len(), 1);
+    }
+
+    #[test]
+    fn caa_at_the_relay_host_permits_the_listed_authorities_by_any_method() {
+        let (svc, _) = svc();
+        let m = ask(&svc, "relay.wanderbooks.link.", RecordType::CAA, true);
+        assert_eq!(m.metadata.response_code, ResponseCode::NoError);
+        let shown: Vec<String> = m.answers.iter().map(|r| r.data.to_string()).collect();
+        assert_eq!(shown, [r#"0 issue "letsencrypt.org""#]);
+        assert!(!shown[0].contains("validationmethods"));
+        // The apex is what it was, and another host under the relay's
+        // label, or an app's name, still has none of its own.
+        let apex = ask(&svc, "wanderbooks.link.", RecordType::CAA, true);
+        let apex: Vec<String> = apex.answers.iter().map(|r| r.data.to_string()).collect();
+        assert_eq!(
+            apex,
+            [r#"0 issue "letsencrypt.org; validationmethods=dns-01""#]
+        );
+        for other in ["x.relay.wanderbooks.link.", "ns1.wanderbooks.link.", APP] {
+            let m = ask(&svc, other, RecordType::CAA, true);
+            assert!(m.answers.is_empty(), "{other}");
+            assert_eq!(m.authorities.len(), 1, "{other}");
+        }
+    }
+
+    #[test]
+    fn no_authority_list_means_no_caa_even_at_the_relay_host() {
+        let cfg = Config::default();
+        let txt = Arc::new(TxtStore::new(Duration::from_secs(60), 10, 4, 100));
+        let svc = DnsService::new(
+            Zone::new(&cfg.domain, &cfg.relay_host),
+            &cfg,
+            txt,
+            Arc::new(AuthorityList::empty()),
+        )
+        .unwrap();
+        for name in ["wanderbooks.link.", "relay.wanderbooks.link."] {
+            assert!(ask(&svc, name, RecordType::CAA, true).answers.is_empty());
+        }
     }
 
     #[test]

@@ -196,7 +196,7 @@ impl JobStop {
         self
     }
 
-    /// The flag: what git and the store's loops are handed to look at.
+    /// The flag: what a backup's copy and the store's loops are handed to look at.
     pub fn flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         self.flag.clone()
     }
@@ -229,7 +229,7 @@ impl JobStop {
         }
     }
 
-    /// A stop that reached the store's own loops or git, said as a job's.
+    /// A stop that reached the store's own loops or a backup's copy, said as a job's.
     fn said(&self, e: RootError, undone: &str) -> RootError {
         match e {
             RootError::Store(_, StoreError::Cancelled) => RootError::Stopped(format!(

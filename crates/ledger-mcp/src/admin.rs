@@ -542,7 +542,7 @@ pub enum CloseOutcome {
     /// sessions ended, and another process could open it.
     Closed,
     /// It was open and is closed as `Closed` says, but its last backup
-    /// wasn't whole (a target that couldn't be reached, git that failed, or
+    /// wasn't whole (a folder that couldn't be reached, a copy that failed, or
     /// a backup stopped after its time): why, in words. The books on disk
     /// are whole; what they hold since the last good backup is not backed
     /// up.

@@ -16,8 +16,9 @@
 //!      every process that could still hold it: a child forked by another
 //!      thread of this process holds a copy of every open descriptor (this
 //!      lock's too) from its fork until its exec, and a `flock` lasts as
-//!      long as any copy does. Every child this crate starts is started by
-//!      [`spawn`], and dropping a [`WriterLock`] returns only once every
+//!      long as any copy does. Every child a process that holds a store starts
+//!      is started by [`spawn`] (the store itself starts none since backups
+//!      became plain files, D-91; the seam stays for any that does), and dropping a [`WriterLock`] returns only once every
 //!      [`spawn`] begun before it has ended (its child has exec'd and the
 //!      copies are closed), and then the lock is taken afresh and let go
 //!      (it is free, or another writer has it, or 500 ms passed: the system

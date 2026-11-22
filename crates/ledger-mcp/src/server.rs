@@ -216,7 +216,7 @@ pub struct SharedStore {
     /// A close of these books has begun (`hurry`): a call that can run
     /// long (a verification, a backup asked for, a package of every stored
     /// file) stops at its next look, answering that it was stopped. Shared
-    /// with the books' backups (backup.rs), whose git it stops.
+    /// with the books' backups (backup.rs), whose copy it stops.
     hurry: Arc<std::sync::atomic::AtomicBool>,
     /// Requests running (from before their blocking task to its end).
     running: std::sync::atomic::AtomicUsize,
@@ -392,7 +392,7 @@ impl SharedStore {
     }
 
     /// The stop flag itself, for what looks at it from another thread or
-    /// hands it to git (ledger_store `cancel`, `Git::with_cancel`).
+    /// hands it to the backup (ledger_store `cancel`, `Ctx::with_stop`).
     pub fn hurry_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.hurry.clone()
     }

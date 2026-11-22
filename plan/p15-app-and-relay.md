@@ -624,3 +624,27 @@ The form (the lead's design; the unit may refine it and must say where):
   touched. A person restoring from one clones it with git themselves and
   uses the existing adopt of a plain folder; the docs say how. A books'
   old `backup.git_remote` setting is reported as no longer used.
+
+**Built (2026-11-21): where the build refined this section.** The code is
+`crates/ledger-store/src/backup/` and `crates/ledger-mcp/src/backup.rs`; the
+rules are `docs/spec/claims/backup.md`; the words for a person are
+`docs/backups.md`.
+
+- The store's lock is held only to take a *cut* (the journal's length and head,
+  the vault, the keys): the files are read after it, which is safe because the
+  journal is append-only and a stored file never changes. Section 9 said "under
+  the store's lock exactly where the commit was taken"; the commit is gone and
+  so is the local copy it wrote, so no slow disk is ever under the lock. The
+  local copy exists only for the format upgrade (`local-backup/`).
+- A destination is tested for being "a point on the live journal" by the
+  byte-identity of the journal prefix its newest manifest names (a SHA-256 of
+  those bytes), which says more than the head at a sequence number.
+- Series of segments are consolidated into one segment when they reach 200, so
+  a manifest stays small however long the books have been backed up; the old
+  segments stay (nothing is deleted).
+- A passphrase is not a journal setting: the key is the book's local file, and a
+  sealed destination is a set of its own beside any plain one, so no journal
+  feature and no format upgrade is needed.
+- Sealed sets are folders named by a random id, so a sealed destination's names
+  say nothing of the books; restore finds the one a passphrase opens.
+

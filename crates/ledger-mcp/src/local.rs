@@ -99,7 +99,7 @@
 //!      and the book is let go (INVARIANT 13), its writer lock released, so
 //!      another process could open it; and only then is a close answered.
 //!      It is answered `closed`, or `closed_backup_incomplete` with why when
-//!      its last backup wasn't whole (a target that failed, git that
+//!      its last backup wasn't whole (a folder that failed, a copy that
 //!      failed, a backup stopped after its time): never a plain `closed`
 //!      for a backup that wasn't made. After that answer no call on that
 //!      book runs until it is opened again. Every other book keeps serving,
@@ -114,9 +114,8 @@
 //!      long I/O or loop over a book's whole journal or files are exactly
 //!      these, and each is stoppable:
 //!        - on the book: `books.back_up_now`, and a backup a timer asked for
-//!          (git is sent SIGTERM and killed only after TERM_GRACE: ledger_
-//!          store backup INVARIANT 5; between targets the flag is looked at
-//!          too); `books.verify` (once per journal line replayed and per
+//!          (its copy stops at the next piece, ledger_store backup
+//!          INVARIANT 8; between destinations the flag is looked at too); `books.verify` (once per journal line replayed and per
 //!          stored file hashed); `books.export_cpa_package` (before it
 //!          builds, and once per stored file it reads, unless it has
 //!          journaled a decision: below); a drill; and a
@@ -160,7 +159,7 @@
 //!          their point of no return, and never waits behind one. A
 //!          PREVIEW (of a restore, of an adoption) changes nothing, and
 //!          holds no book's turn at all: a close never waits for one,
-//!          however long its clone or its queue for `books.lock`; only the
+//!          however long its scratch build or its queue for `books.lock`; only the
 //!          server's close stops it. No close of any other book stops, fails,
 //!          refuses or delays an open, a close or a job of X, nor a job
 //!          queued for its turn at making books (`books.lock` in the root,
@@ -171,7 +170,7 @@
 //!          way waits for that book's turn, so for the close to end, and is
 //!          then asked as any other. Each is stopped, before its
 //!          point of no return, at its next look (a phase, a stored file, a
-//!          journal line, a git command): what it wrote is removed (a clone,
+//!          journal line, a piece of a copy): what it wrote is removed (a scratch,
 //!          a staging folder, and the lock file an adoption made in the
 //!          source folder), and the root is byte for byte as it was. The
 //!          point of no return of restore and adopt is the rename that puts
@@ -227,16 +226,14 @@
 //!           ANSWER_GRACE from the START of the close, inside (a): a
 //!           stalled client adds nothing);
 //!        c. T_stop: the longest between two looks of what is stopped, one
-//!           of: a git command's stop (SIGTERM and up to TERM_GRACE, 5 s;
-//!           then a kill and GROUP_GONE_WAIT, 2 s, and its pipes, 10 s at
-//!           most), one journal line, one stored file, one 64 KiB chunk, one
+//!           of: one journal line, one stored file, one 64 KiB chunk, one
 //!           phase of a job; and the removal of what a stopped job or drill
-//!           wrote (its scratch clone or staging folder: a local deletion of
+//!           wrote (its scratch folder or staging folder: a local deletion of
 //!           the job's own output, as long as that is large, waiting on no
 //!           one);
 //!        d. BACKUP_AT_CLOSE for the last backup;
 //!        e. T_stop again for what is left of that backup at its bound
-//!           (`Backups::shut`: git stopped, every step awaited);
+//!           (`Backups::shut`: copying stopped, every step awaited);
 //!        f. closing the logs and letting go of the store (instant).
 //!      A drill (or a format upgrade) that took the backups' turn never
 //!      costs the last backup its time.
@@ -252,7 +249,7 @@
 //!      book's sessions end with the book.
 //!  13. After a close of a book is answered, this process holds nothing
 //!      that can write to that book's folder (journal, access log, ops
-//!      logs, stored files, upload parts, the backup's git repository) or
+//!      logs, stored files, upload parts, the backup folder) or
 //!      read it on a caller's behalf, until the book is opened again; and
 //!      a handle from before a close can never write after a reopen. Every
 //!      path that touches a book is either counted by its gate (a request
@@ -261,11 +258,11 @@
 //!      sweep takes the place too), or checks, under the same lock as its
 //!      write, that the book is still open, and refuses if not: the
 //!      access log, the uploads, the exports and the backups (record,
-//!      git, drill, upgrade) are each closed under the lock their own
+//!      copy, drill, upgrade) are each closed under the lock their own
 //!      writes go in under, by the close, once the gate is empty; the
 //!      store is let go under its lock. A close waits for the backup's
 //!      work to END, not only for its future: a run past its bound is
-//!      stopped (git killed with all it started) and waited for, so the
+//!      stopped (its copy ended at the next piece) and waited for, so the
 //!      close is never answered while a backup runs. The timers (the
 //!      sweep, the look for a backup due, the look for a drill due) work
 //!      on handles that are closed with the book, and so can't act on a
@@ -339,7 +336,7 @@
 //!      answers closed; nothing is written to the book afterwards, and when
 //!      it is opened again its access log continues one whole chain.
 //!   6. A book with a slow backup is closed: not answered while the backup
-//!      runs; at its bound git is stopped and waited for, and the answer
+//!      runs; at its bound the copy is stopped and waited for, and the answer
 //!      says the last backup wasn't whole; nothing runs after.
 //!   7. A restore replaces an open book while an upload is half received:
 //!      the restore is not answered until the upload is, and no part file
@@ -353,23 +350,20 @@
 //!      call running past it, are not cut; an upload that keeps coming,
 //!      steadily, past the grace is cut.
 //!  10. A drill is slow (a large book): the book is closed, the drill is
-//!      stopped at its next look and its clone removed, the last backup is
+//!      stopped at its next look and its scratch folder removed, the last backup is
 //!      made, and the close is answered within INVARIANT 10's bound. A
 //!      format upgrade not yet journaled is stopped the same way, the books
 //!      unchanged.
-//!  11. A backup's git is stopped inside a commit or a push: it is sent
-//!      SIGTERM and removes its own locks (nothing is left, nothing is
-//!      recorded), the book opened again backs up at once. A git that can't
-//!      end on SIGTERM and has to be killed after TERM_GRACE leaves locks
-//!      that this process removes from the book's own archive only, and
-//!      leaves in the owner's backup folder, recorded with their whole path
-//!      and said in the close's answer and in the backup's status, until the
-//!      owner removes them.
+//!  11. A backup's copy is stopped between pieces by a close: it writes no
+//!      manifest, the folder proves whole at its previous one, nothing is
+//!      left to clean up and nothing is recorded as done, and the book
+//!      opened again backs up at once.
 //!  12. The server is closed (standard input ends) with an upload stalled
 //!      on one book and a call's body stalled on another: both are cut one
 //!      grace after the close began, the server exits 0 within its bound.
-//!  13. A backup asked for (`books.back_up_now`) is running, git stalled,
-//!      and the book is closed: the call is answered, git still stalled,
+//!  13. A backup asked for (`books.back_up_now`) is running, its copy
+//!      stalled, and the book is closed: the call is answered, the copy still
+//!      stalled,
 //!      that it was stopped because the books are closing; its record says
 //!      `refused: stopped_by_close`; the close is answered `closed`.
 //!  14. A restore of a large backup over `beta` is running (an admin job)
@@ -1670,7 +1664,7 @@ impl Books {
                         Err(why) => Response::Refused(self.hide(why)),
                     }
                 }
-                Err(r) => r,
+                Err(r) => *r,
             },
             Request::BackupStatus { id } => match self.backups_of(&id) {
                 Ok(backups) => {
@@ -1691,7 +1685,7 @@ impl Books {
                         note: s.status.note,
                     })
                 }
-                Err(r) => r,
+                Err(r) => *r,
             },
             Request::BackupSave { id, path } => match self.backups_of(&id) {
                 Ok(backups) => {
@@ -1701,7 +1695,7 @@ impl Books {
                         Err(why) => Response::Refused(self.hide(why)),
                     }
                 }
-                Err(r) => r,
+                Err(r) => *r,
             },
             Request::Adopt {
                 id,
@@ -2071,7 +2065,7 @@ impl Books {
     ///     the access log; the client may retry it: INVARIANT 10);
     ///  3. its MCP sessions end;
     ///  4. the last backup, for `backup_at_close` at most; the backups are
-    ///     then shut, which stops a run still going (git killed) and waits
+    ///     then shut, which stops a run still going (its copy stopped) and waits
     ///     for it to end, so the answer never comes while it runs;
     ///  5. the access log, uploads and exports close, each under the lock
     ///     its own writes go in under, so a late writer is refused;
@@ -2229,8 +2223,8 @@ impl Books {
 
     /// The backups of the open book `id`, or the refusal to give a request
     /// that needs them.
-    fn backups_of(&self, id: &str) -> Result<Arc<crate::backup::Backups>, Response> {
-        let refused = |text: String| Response::Refused(self.hide(text));
+    fn backups_of(&self, id: &str) -> Result<Arc<crate::backup::Backups>, Box<Response>> {
+        let refused = |text: String| Box::new(Response::Refused(self.hide(text)));
         let id = BookId::parse(id).map_err(|e| refused(e.to_string()))?;
         match self.held().get(id.as_str()) {
             Some(Book::Open { backups, .. }) => Ok(backups.clone()),

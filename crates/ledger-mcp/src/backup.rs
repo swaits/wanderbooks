@@ -1075,8 +1075,7 @@ impl Backups {
             let _step = step;
             let key = BackupKey::load(&dir).map_err(|e| e.to_string())?;
             let cut = store
-                .with_store(|s| Cut::take(&book, &dir, s.head()))
-                .map_err(|e| e)?
+                .with_store(|s| Cut::take(&book, &dir, s.head()))?
                 .map_err(|e| e.to_string())?;
             backup::save_file(&sealed_to, &cut, key.as_ref(), &ctx)
                 .map(|w| (w, key.is_some()))

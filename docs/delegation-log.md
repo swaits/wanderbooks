@@ -85,3 +85,8 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | debug 2 | sonnet (high) | failures from GitHub's run on 8a6d731c3 (doc links, wording tests, marker writes, git close test, fuzz key, a sum in remote) | accepted on its tests and a compile after merge; macOS items unproven
 - 2026-11-21 | debug 2 | sonnet (medium) | the working-state picture differs on Windows | accepted on its tests; proof is GitHub's next Windows run
 - 2026-11-21 | impl-multi 3 | sonnet (high) | P15 C1: packages for Windows, macOS, Linux; the Claude desktop extension; the release workflow | accepted on its Linux tests after merge; nothing run on Windows or macOS; no separate review (the release workflow's first run is the test)
+- 2026-11-21 | impl-multi 2 | sonnet (high) | tax-id shapes in free text: stopped for the owner's decision on the detector | accepted (a correct stop)
+- 2026-11-21 | impl-multi 2 | sonnet (high) | tax-id shapes refused in journaled free text (WB-partner-15) | accepted after one review and one fix round
+- 2026-11-21 | review 3 | sonnet (high) | tax-id check review | accepted: 1 high (old assets could not depreciate), 2 medium
+- 2026-11-21 | impl-multi 2 | sonnet (high) | tax-id fix round (composed text masked, reference class, detector edges) | accepted: its report never arrived; judged from commits and the lead's own run of its tests after merge
+- 2026-11-21 | read 2 | sonnet | how backups work today and what git is used for | accepted; basis of D-91, D-92

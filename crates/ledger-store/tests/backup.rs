@@ -699,7 +699,13 @@ fn the_text_read_from_a_stored_file_is_a_stored_file_too() {
     let b = dir.path().join("book");
     let mut s = book(&b);
     let (attachment, _, _) = s
-        .attach_receipt(None, "words.txt", "text/plain", b"a receipt with words", None)
+        .attach_receipt(
+            None,
+            "words.txt",
+            "text/plain",
+            b"a receipt with words",
+            None,
+        )
         .unwrap();
     s.extract_attachment(attachment).unwrap();
     let text_sha = s

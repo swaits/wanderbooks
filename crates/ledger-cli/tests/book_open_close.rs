@@ -1233,11 +1233,19 @@ fn a_close_is_not_answered_while_its_backup_still_runs() {
         Duration::from_millis(500),
         "after the close was answered",
     );
+    // (The test's own stall file went with the lift.)
+    let changed = |before: &BTreeMap<String, (u64, String)>,
+                   now: &BTreeMap<String, (u64, String)>| {
+        moved(before, now)
+            .into_iter()
+            .filter(|m| !m.contains("slow-backup"))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        moved(&at_close, &tree_of(&home.book_dir(A))),
+        changed(&at_close, &tree_of(&home.book_dir(A))),
         Vec::<String>::new()
     );
-    assert_eq!(moved(&in_folder, &tree_of(&disk)), Vec::<String>::new());
+    assert_eq!(changed(&in_folder, &tree_of(&disk)), Vec::<String>::new());
     // Opened again, the book's backup record is a whole chain, and it
     // backs up (nothing of the old backups is in its way).
     assert_eq!(open_book(&home, A), OpenOutcome::Opened);
@@ -2523,8 +2531,14 @@ fn a_close_stops_a_running_backup_call_and_says_so() {
                 && r.get("why") == Some(&json!("asked"))),
         "{record:?}"
     );
+    // The run before the stall made its record; the stopped one made none
+    // of its own after its `stopped`.
+    let stopped_at = record
+        .iter()
+        .position(|r| r.get("kind") == Some(&json!("stopped")))
+        .unwrap();
     assert!(
-        !record
+        !record[stopped_at..]
             .iter()
             .any(|r| r.get("why") == Some(&json!("asked"))
                 && r.get("kind") != Some(&json!("stopped"))),

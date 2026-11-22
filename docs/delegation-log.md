@@ -93,3 +93,4 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | impl-multi 3 | sonnet (high) | backups without git (plan section 9, D-91, D-92) | accepted after one review and one fix round; the lead reran its eight test files after merge
 - 2026-11-21 | review 3 | opus (medium) | backups review | accepted: 1 high (a damaged piece reused, the drill hiding it), 4 medium
 - 2026-11-21 | impl-multi 3 | sonnet (high) | backups fix round (13 items: proof after each backup, drill on the newest only, repair, ahead vs diverged, lost key, no consolidation) | accepted on tests rerun after merge
+- 2026-11-21 | debug 2 | sonnet (high) | a phone number refused as a tax id; the burst-close test | accepted: phones and ZIP+4 kept, the test's assumption fixed; rerun after merge

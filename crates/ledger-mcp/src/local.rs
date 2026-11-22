@@ -5418,7 +5418,7 @@ mod tests {
         // Its journal piece is damaged, one byte.
         let piece = std::fs::read_dir(
             dir.join(ledger_store::backup::LOCAL_DIR)
-                .join("acme")
+                .join("wanderbooks-acme")
                 .join("journal"),
         )
         .unwrap()

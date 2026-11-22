@@ -4433,6 +4433,70 @@ mod tests {
         };
         let say = |s: &admin::BackupStanding| backup_words(s).join(" | ");
         assert_eq!(say(&base), "Not backed up: no backup folder is chosen yet.");
+        // The new states, each in words: books ahead of the folder, a key
+        // lost, a newest backup that is damaged, files found damaged, a
+        // synced folder.
+        let there = admin::BackupStanding {
+            folder: Some("/media/disk".into()),
+            last_ok_at: Some("2026-11-21T10:00:00Z".into()),
+            through_seq: Some(5),
+            ..base.clone()
+        };
+        let ahead = admin::BackupStanding {
+            last_error: Some("the backup folder holds a longer history of these books".into()),
+            error_kind: Some("ahead".into()),
+            ..there.clone()
+        };
+        let said = say(&ahead);
+        assert!(said.contains("restored from an older backup"), "{said}");
+        assert!(said.contains("start a new backup set"), "{said}");
+        let lost = admin::BackupStanding {
+            last_error: Some("no longer has its key".into()),
+            error_kind: Some("key_missing".into()),
+            sealed: true,
+            ..there.clone()
+        };
+        assert!(say(&lost).contains("Enter the backup passphrase again"));
+        let drill = admin::BackupStanding {
+            drill_error: Some(
+                "the newest backup (number 3, from today) is damaged; an older one from last week is whole"
+                    .into(),
+            ),
+            error_kind: Some("newest_damaged".into()),
+            ..there.clone()
+        };
+        let said = say(&drill);
+        assert!(said.contains("weekly check"), "{said}");
+        assert!(said.contains("older books"), "{said}");
+        assert!(!said.contains("Proven restorable"), "{said}");
+        let damaged = admin::BackupStanding {
+            damaged_files: vec!["journal/000002-abc".into()],
+            sync: Some(ledger_mcp::backup::sync_words(Some("Dropbox"))),
+            ..there.clone()
+        };
+        let said = say(&damaged);
+        assert!(
+            said.contains("found damaged and were written again"),
+            "{said}"
+        );
+        assert!(said.contains("journal/000002-abc"), "{said}");
+        assert!(said.contains("kept in sync by Dropbox"), "{said}");
+        let preview = admin::RestorePreview {
+            head: (3, "ab".into()),
+            blobs: 0,
+            vault_files: 0,
+            exists: false,
+            origin: None,
+            sealed: false,
+            passed_over: 2,
+            written: Some("2026-11-14T10:00:00Z".into()),
+            newest_written: Some("2026-11-21T10:00:00Z".into()),
+        };
+        let said = older_backup_words(&preview);
+        assert!(said.starts_with("NOT THE NEWEST BACKUP"), "{said}");
+        assert!(said.contains("passes over 2 newer backups"), "{said}");
+        assert!(said.contains("This backup is from"), "{said}");
+        assert!(said.contains("the newest in the folder is from"), "{said}");
         let with_folder = admin::BackupStanding {
             folder: Some("/media/disk/Backups".into()),
             ..base.clone()

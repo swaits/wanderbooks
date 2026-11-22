@@ -1713,7 +1713,7 @@ fn backed_up_to_folder(home: &Home, w: &mut Wire, id: &str) -> PathBuf {
         Response::BackedUp { targets, .. } => assert!(targets[0].problem.is_none(), "{targets:?}"),
         other => panic!("{other:?}"),
     }
-    disk.join(id)
+    disk.join(format!("wanderbooks-{id}"))
 }
 
 /// A restore over an open book lets go of it as a close does: what is

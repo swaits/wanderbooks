@@ -1615,6 +1615,87 @@ mod tests {
         assert_eq!(hide(&"x".repeat(2000), dir).len(), ERROR_MAX);
     }
 
+    fn obj(v: Value) -> Map<String, Value> {
+        match v {
+            Value::Object(m) => m,
+            _ => unreachable!(),
+        }
+    }
+
+    /// What the record says of whether the backups are sealed: the newest
+    /// word on it (a set-up's choice, a push's `sealed`), and the key's
+    /// fingerprint from the newest record that was made with one.
+    #[test]
+    fn the_record_remembers_whether_backups_were_sealed_and_with_which_key() {
+        assert_eq!(sealed_before(&[]), None);
+        let setup = obj(json!({"kind": "setup", "passphrase": "set", "fp": "abc"}));
+        let sealed_push = obj(json!({"kind": "push", "ok": true, "sealed": true, "fp": "abc"}));
+        // A push that could not be made (no key) says sealed and no
+        // fingerprint: the fingerprint is the one before it.
+        let stopped = obj(json!({"kind": "push", "ok": false, "sealed": true}));
+        let removed = obj(json!({"kind": "setup", "passphrase": "removed"}));
+        let plain_push = obj(json!({"kind": "push", "ok": true, "sealed": false}));
+        let commit = obj(json!({"kind": "commit", "ok": true}));
+        assert_eq!(
+            sealed_before(std::slice::from_ref(&setup)),
+            Some((true, Some("abc".into())))
+        );
+        assert_eq!(
+            sealed_before(&[
+                setup.clone(),
+                sealed_push.clone(),
+                stopped.clone(),
+                commit.clone()
+            ]),
+            Some((true, Some("abc".into())))
+        );
+        // Taken off on purpose: plain is meant, whatever came before.
+        assert_eq!(
+            sealed_before(&[setup.clone(), sealed_push, stopped, removed.clone()]),
+            Some((false, None))
+        );
+        assert_eq!(
+            sealed_before(&[setup, removed, plain_push]),
+            Some((false, None))
+        );
+        // Records that say nothing of it (older ones) say nothing.
+        assert_eq!(sealed_before(&[commit]), None);
+    }
+
+    #[test]
+    fn a_folder_a_sync_service_keeps_is_known_by_its_path() {
+        for (path, service) in [
+            ("/home/u/Dropbox/Backups", Some("Dropbox")),
+            ("/home/u/Dropbox (Personal)/Books", Some("Dropbox")),
+            (
+                "/Users/u/Library/CloudStorage/OneDrive-Acme/Books",
+                Some("OneDrive"),
+            ),
+            ("/Users/u/OneDrive/Books", Some("OneDrive")),
+            (
+                "/Users/u/Library/Mobile Documents/com~apple~CloudDocs/Books",
+                Some("iCloud Drive"),
+            ),
+            ("/Users/u/iCloud Drive/Books", Some("iCloud Drive")),
+            ("/home/u/Google Drive/My Drive/Books", Some("Google Drive")),
+            ("/home/u/Nextcloud/Books", Some("Nextcloud")),
+            ("/media/u/usb-stick/Backups", None),
+            ("/home/u/Documents/Dropboxes-are-not-it", None),
+        ] {
+            assert_eq!(sync_service(Path::new(path)), service, "{path}");
+        }
+        let said = sync_words(Some("Dropbox"));
+        assert!(said.contains("kept in sync by Dropbox"));
+        for part in [
+            "one computer only",
+            "available offline",
+            "folder of its own",
+        ] {
+            assert!(said.contains(part), "{part}");
+            assert!(sync_words(None).contains(part), "{part}");
+        }
+    }
+
     /// A record of `kind` for target `key`, `ago` before `now`.
     fn rec(
         now: chrono::DateTime<chrono::Utc>,

@@ -5185,7 +5185,7 @@ mod tests {
         let found =
             ledger_store::backup::find(&dir.join(ledger_store::backup::LOCAL_DIR), None, &ctx)
                 .expect("a local backup is there");
-        ledger_store::backup::verify_found(&found, &scratch, true, &ctx).expect("it proves whole")
+        ledger_store::backup::verify_found(&found, &scratch, &ctx).expect("it proves whole")
     }
 
     /// plan/served.md 3.9's `format_upgrade_waits_for_consent`, the

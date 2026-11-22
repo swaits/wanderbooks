@@ -1182,7 +1182,6 @@ impl Root {
         books: &Path,
         id: &BookId,
         stop: &JobStop,
-        with_files: bool,
     ) -> Result<(PathBuf, crate::backup::Verified), RootError> {
         stop.at("fetch", "restored")?;
         let ctx = crate::backup::Ctx::new().with_stop(stop.flag());
@@ -1200,7 +1199,7 @@ impl Root {
         }
         let scratch = books.join(format!("{RESTORE_PREFIX}{id}-{}", std::process::id()));
         let proven = crate::backup::find(source, passphrase, &ctx)
-            .and_then(|found| crate::backup::verify_found(&found, &scratch, with_files, &ctx));
+            .and_then(|found| crate::backup::verify_found(&found, &scratch, &ctx));
         match proven {
             Ok(v) => Ok((scratch, v)),
             Err(e) => {
@@ -1241,7 +1240,7 @@ impl Root {
         (|| {
             let _lock = self.books_lock(stop, "restored")?;
             let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
-            let (scratch, v) = self.fetch_backup(source, passphrase, &books, id, stop, false)?;
+            let (scratch, v) = self.fetch_backup(source, passphrase, &books, id, stop)?;
             let vault = scratch.join(VAULT_DIR);
             let vault_files = if vault.is_dir() {
                 std::fs::read_dir(&vault)
@@ -1353,7 +1352,7 @@ impl Root {
         };
         stop.at("start", "restored")?;
         let _scope = crate::cancel::scope(stop.flag());
-        let (scratch, v) = self.fetch_backup(source, passphrase, &books, id, stop, true)?;
+        let (scratch, v) = self.fetch_backup(source, passphrase, &books, id, stop)?;
         let staging = books.join(format!("{RESTORE_PREFIX}{id}-{}-book", std::process::id()));
         let built = (|| -> Result<RestoreReport, RootError> {
             stop.at("copy", "restored")?;

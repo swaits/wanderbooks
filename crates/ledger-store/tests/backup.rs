@@ -106,7 +106,7 @@ fn prove(
     name: &str,
 ) -> Result<ledger_store::backup::Verified, BackupError> {
     let found = find(source, pass, &Ctx::new())?;
-    verify_found(&found, &root.join(name), true, &Ctx::new())
+    verify_found(&found, &root.join(name), &Ctx::new())
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn a_flipped_or_cut_piece_is_found_and_never_restored() {
         // Found once (a sealed backup's key takes a moment to derive).
         let found = find(&disk, pass, &Ctx::new()).unwrap();
         let prove = |_: &Path, _: Option<&str>, root: &Path, name: &str| {
-            verify_found(&found, &root.join(name), true, &Ctx::new())
+            verify_found(&found, &root.join(name), &Ctx::new())
         };
         let set = std::fs::read_dir(&disk)
             .unwrap()
@@ -686,4 +686,38 @@ fn a_loser_of_a_manifest_number_goes_on_from_the_winner() {
         1
     );
     prove(&disk, None, dir.path(), "v").unwrap();
+}
+
+// --- what the store reads of a backup -----------------------------------
+
+#[test]
+fn the_text_read_from_a_stored_file_is_a_stored_file_too() {
+    // The store's own verification reads the text an extraction recorded as
+    // a stored file; a backup that left it out would not prove whole, so it
+    // is carried and proven with the rest.
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let mut s = book(&b);
+    let (attachment, _, _) = s
+        .attach_receipt(None, "words.txt", "text/plain", b"a receipt with words", None)
+        .unwrap();
+    s.extract_attachment(attachment).unwrap();
+    let text_sha = s
+        .extraction(attachment)
+        .unwrap()
+        .and_then(|x| x.text_sha256)
+        .expect("the text is a stored file");
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    let v = prove(&disk, None, dir.path(), "v").unwrap();
+    assert!(
+        v.tree
+            .join("blobs")
+            .join(&text_sha[0..2])
+            .join(&text_sha[2..4])
+            .join(&text_sha)
+            .is_file()
+    );
+    assert_eq!(v.head, s.head());
 }

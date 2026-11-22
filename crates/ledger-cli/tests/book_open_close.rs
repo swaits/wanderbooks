@@ -1159,7 +1159,7 @@ fn proven_head(home: &Home, disk: &std::path::Path, tag: &str) -> (u64, String) 
     use ledger_store::backup::{Ctx, find, verify_found};
     let scratch = home.dir.path().join(format!("scratch-{tag}"));
     let found = find(disk, None, &Ctx::new()).unwrap_or_else(|e| panic!("{tag}: {e}"));
-    verify_found(&found, &scratch, false, &Ctx::new())
+    verify_found(&found, &scratch, &Ctx::new())
         .unwrap_or_else(|e| panic!("{tag}: {e}"))
         .head
 }

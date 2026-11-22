@@ -478,16 +478,11 @@ fn put_scratch(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Build the books of `m` in `scratch` (a new folder): the journal, the
-/// access log, the vault and the keys, and, with `with_files`, every
-/// stored file; every piece proven as it is read. Without `with_files` the
-/// stored files are re-hashed and not kept (a drill). Returns the hashes of
-/// the stored files proven.
-fn materialize(
-    set: &Set,
-    m: &Manifest,
-    scratch: &Path,
-    with_files: bool,
-) -> Result<BTreeSet<String>, BackupError> {
+/// access log, the vault, the keys and every stored file; every piece
+/// proven as it is read. (The store reads some stored files itself when
+/// it verifies the books, so a drill keeps them too, as a restore does.)
+/// Returns the hashes of the stored files proven.
+fn materialize(set: &Set, m: &Manifest, scratch: &Path) -> Result<BTreeSet<String>, BackupError> {
     let ctx = &set.ctx;
     std::fs::create_dir_all(scratch)?;
     for (series, kind, name) in [
@@ -524,23 +519,19 @@ fn materialize(
     for line in set.index(m)? {
         ctx.check("reading the backup")?;
         let rel = piece_path(set.keys.as_ref(), Kind::File, 0, &line.sha256);
-        if with_files {
-            let blob = scratch
-                .join(crate::store::BLOBS_DIR)
-                .join(&line.sha256[0..2])
-                .join(&line.sha256[2..4]);
-            std::fs::create_dir_all(&blob)?;
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(blob.join(&line.sha256))?;
-            set.read_piece(&rel, Kind::File, line.bytes, &line.sha256, &mut |c| {
-                f.write_all(c)
-            })?;
-            f.sync_all()?;
-        } else {
-            set.read_piece(&rel, Kind::File, line.bytes, &line.sha256, &mut |_| Ok(()))?;
-        }
+        let blob = scratch
+            .join(crate::store::BLOBS_DIR)
+            .join(&line.sha256[0..2])
+            .join(&line.sha256[2..4]);
+        std::fs::create_dir_all(&blob)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(blob.join(&line.sha256))?;
+        set.read_piece(&rel, Kind::File, line.bytes, &line.sha256, &mut |c| {
+            f.write_all(c)
+        })?;
+        f.sync_all()?;
         proven.insert(line.sha256);
     }
     Ok(proven)
@@ -554,7 +545,6 @@ fn prove_books(
     m: &Manifest,
     scratch: &Path,
     proven_files: &BTreeSet<String>,
-    with_files: bool,
     ctx: &Ctx,
 ) -> Result<(u64, (u64, String)), BackupError> {
     ctx.phase("replay");
@@ -570,11 +560,7 @@ fn prove_books(
             short(missing)
         )));
     }
-    let blobs = if with_files {
-        store.verify_blobs()?
-    } else {
-        proven_files.len() as u64
-    };
+    let blobs = store.verify_blobs()?;
     let head = store.head();
     let tins: Vec<String> = store
         .ledger()
@@ -618,15 +604,9 @@ fn prove_books(
 
 /// Prove the backup found, building its books in `scratch` (a new folder):
 /// the newest manifest that proves whole; a newer one that does not is
-/// passed over and said. With `with_files`, every stored file is kept in
-/// the scratch folder (a restore); without, they are re-hashed and not
-/// kept (a drill).
-pub fn verify_found(
-    found: &Found,
-    scratch: &Path,
-    with_files: bool,
-    ctx: &Ctx,
-) -> Result<Verified, BackupError> {
+/// passed over and said. Every stored file is re-hashed and kept in the
+/// scratch folder (a restore moves them from it; a drill removes it).
+pub fn verify_found(found: &Found, scratch: &Path, ctx: &Ctx) -> Result<Verified, BackupError> {
     if scratch.exists() {
         return Err(BackupError::Damaged("its scratch folder is in use".into()));
     }
@@ -636,8 +616,8 @@ pub fn verify_found(
     for m in set.whole_ones()? {
         ctx.phase("fetch");
         ctx.check("verifying")?;
-        let attempt = materialize(set, &m, scratch, with_files)
-            .and_then(|files| prove_books(&m, scratch, &files, with_files, ctx));
+        let attempt =
+            materialize(set, &m, scratch).and_then(|files| prove_books(&m, scratch, &files, ctx));
         match attempt {
             Ok((blobs, head)) => {
                 return Ok(Verified {
@@ -712,7 +692,7 @@ pub fn drill(
         key: dest.key.clone(),
         set,
     };
-    let checked = verify_found(&found, scratch, false, ctx).and_then(|v| {
+    let checked = verify_found(&found, scratch, ctx).and_then(|v| {
         ctx.phase("prefix");
         if v.book.as_deref() != Some(book) {
             return Err(BackupError::Elsewhere);
@@ -755,7 +735,7 @@ pub fn prove_local(
         key: None,
         set,
     };
-    let proven = verify_found(&found, scratch, false, ctx).and_then(|v| {
+    let proven = verify_found(&found, scratch, ctx).and_then(|v| {
         if v.head != *head {
             return Err(BackupError::Damaged(format!(
                 "it holds the books through event {}, and they are at event {}",

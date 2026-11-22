@@ -364,7 +364,7 @@ async fn backed_up(c: &Client, within: Duration) -> Value {
 fn proven(home: &Home, source: &Path, tag: &str) -> (u64, String) {
     let scratch = home.outside(&format!("scratch-{tag}"));
     let found = find(source, None, &Ctx::new()).unwrap_or_else(|e| panic!("{tag}: {e}"));
-    verify_found(&found, &scratch, false, &Ctx::new())
+    verify_found(&found, &scratch, &Ctx::new())
         .unwrap_or_else(|e| panic!("{tag}: {e}"))
         .head
 }
@@ -412,7 +412,7 @@ async fn a_book_backs_itself_up_to_its_folder_soon_after_a_write() {
     // Its journal is the live journal's beginning (a drill's check).
     let scratch = home.outside("scratch-prefix");
     let found = find(&folder, None, &Ctx::new()).unwrap();
-    let v = verify_found(&found, &scratch, false, &Ctx::new()).unwrap();
+    let v = verify_found(&found, &scratch, &Ctx::new()).unwrap();
     assert!(
         std::fs::read(home.book_dir("acme").join(ledger_store::JOURNAL_FILE))
             .unwrap()

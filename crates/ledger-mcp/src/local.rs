@@ -1614,42 +1614,8 @@ impl Books {
                     Err(why) => Response::Refused(self.hide(why)),
                 }
             }
-            Request::BackUpNow { id, new_disk } => {
-                let id = match BookId::parse(&id) {
-                    Ok(id) => id,
-                    Err(e) => return refused(e),
-                };
-                let backups = match self.held().get(id.as_str()) {
-                    Some(Book::Open { backups, .. }) => backups.clone(),
-                    Some(Book::Failed(why)) => {
-                        return Response::Refused(format!("those books didn't open: {why}"));
-                    }
-                    Some(Book::Closed) => return Response::Refused(self.not_open(&id)),
-                    None => {
-                        return Response::Refused(format!(
-                            "there are no books called {:?}",
-                            id.as_str()
-                        ));
-                    }
-                };
-                let rt = tokio::runtime::Handle::current();
-                match rt.block_on(backups.run_with("asked", new_disk)) {
-                    Ok(status) => Response::BackedUp {
-                        head_seq: status.head_seq,
-                        targets: status
-                            .targets
-                            .into_iter()
-                            .map(|t| admin::BackedUpTarget {
-                                target: t.target,
-                                at: t.at,
-                                through_seq: t.through_seq,
-                                problem: t.last_error,
-                            })
-                            .collect(),
-                    },
-                    Err(why) => Response::Refused(self.hide(why)),
-                }
-            }
+            Request::BackUpNewSet { id } => self.back_up_response(&id, false, true),
+            Request::BackUpNow { id, new_disk } => self.back_up_response(&id, new_disk, false),
             Request::BackupSetup {
                 id,
                 folder,
@@ -1685,6 +1651,9 @@ impl Books {
                         drill_error: t.and_then(|t| t.drill_error.clone()),
                         disconnected: t.is_some_and(|t| t.disconnected),
                         note: s.status.note,
+                        error_kind: t.and_then(|t| t.error_kind.clone()),
+                        damaged_files: t.map(|t| t.damaged_files.clone()).unwrap_or_default(),
+                        sync: s.sync,
                     })
                 }
                 Err(r) => *r,
@@ -2225,6 +2194,42 @@ impl Books {
 
     /// The backups of the open book `id`, or the refusal to give a request
     /// that needs them.
+    /// Back the books `id` up now (`new_disk`: their disk is new; `new_set`:
+    /// begin a new set beside the old one), what came of it.
+    fn back_up_response(&self, id: &str, new_disk: bool, new_set: bool) -> Response {
+        let id = match BookId::parse(id) {
+            Ok(id) => id,
+            Err(e) => return Response::Refused(e.to_string()),
+        };
+        let backups = match self.held().get(id.as_str()) {
+            Some(Book::Open { backups, .. }) => backups.clone(),
+            Some(Book::Failed(why)) => {
+                return Response::Refused(format!("those books didn't open: {why}"));
+            }
+            Some(Book::Closed) => return Response::Refused(self.not_open(&id)),
+            None => {
+                return Response::Refused(format!("there are no books called {:?}", id.as_str()));
+            }
+        };
+        let rt = tokio::runtime::Handle::current();
+        match rt.block_on(backups.run_with_set("asked", new_disk, new_set)) {
+            Ok(status) => Response::BackedUp {
+                head_seq: status.head_seq,
+                targets: status
+                    .targets
+                    .into_iter()
+                    .map(|t| admin::BackedUpTarget {
+                        target: t.target,
+                        at: t.at,
+                        through_seq: t.through_seq,
+                        problem: t.last_error,
+                    })
+                    .collect(),
+            },
+            Err(why) => Response::Refused(self.hide(why)),
+        }
+    }
+
     fn backups_of(&self, id: &str) -> Result<Arc<crate::backup::Backups>, Box<Response>> {
         let refused = |text: String| Box::new(Response::Refused(self.hide(text)));
         let id = BookId::parse(id).map_err(|e| refused(e.to_string()))?;
@@ -2287,6 +2292,8 @@ impl Books {
                     origin: p.origin,
                     sealed: p.sealed,
                     passed_over: p.passed_over,
+                    written: p.written,
+                    newest_written: p.newest_written,
                 }),
                 Err(e) => said(e.to_string()),
             };

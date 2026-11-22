@@ -228,6 +228,10 @@ pub struct Ctx {
     /// Tests: nothing is synced to disk (a destination of thousands of
     /// backups is made quickly; a real one never is).
     no_sync: bool,
+    /// Tests: the proof after a backup is left out (for the tests that make
+    /// many backups only to see what is written, which prove what they
+    /// made themselves).
+    no_proof: bool,
     /// Tests: told each read and length look at a file of the set.
     trace: Option<Trace>,
 }
@@ -295,6 +299,18 @@ impl Ctx {
     pub fn with_no_sync(mut self) -> Self {
         self.no_sync = true;
         self
+    }
+
+    /// The proof after a backup is left out (tests that make many backups
+    /// only to see what is written; the proof has tests of its own).
+    #[doc(hidden)]
+    pub fn with_proof_skipped(mut self) -> Self {
+        self.no_proof = true;
+        self
+    }
+
+    pub(crate) fn skips_proof(&self) -> bool {
+        self.no_proof
     }
 
     pub(crate) fn syncs(&self) -> bool {

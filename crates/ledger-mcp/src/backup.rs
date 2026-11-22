@@ -317,21 +317,36 @@ pub const OLD_ARCHIVE: &str = "An older backup folder from an earlier version is
 /// push that was made sealed or plain), with the key's fingerprint, which
 /// opens nothing.
 fn sealed_before(records: &[Map<String, Value>]) -> Option<(bool, Option<String>)> {
-    records.iter().rev().find_map(|r| {
+    let says = |r: &Map<String, Value>| -> Option<bool> {
         if is(r, "setup") {
             match r.get("passphrase").and_then(Value::as_str) {
-                Some("set") => Some((true, text(r, "fp"))),
-                Some("removed") => Some((false, None)),
+                Some("set") => Some(true),
+                Some("removed") => Some(false),
                 _ => None,
             }
         } else if is(r, "push") {
-            r.get("sealed")
-                .and_then(Value::as_bool)
-                .map(|sealed| (sealed, text(r, "fp")))
+            r.get("sealed").and_then(Value::as_bool)
         } else {
             None
         }
-    })
+    };
+    let (at, sealed) = records
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, r)| says(r).map(|s| (i, s)))?;
+    // The fingerprint of the key the backups were sealed with: the newest
+    // record that was made with one (a push that couldn't be made says
+    // none).
+    let fp = sealed
+        .then(|| {
+            records[..=at]
+                .iter()
+                .rev()
+                .find_map(|r| says(r).filter(|s| *s).and_then(|_| text(r, "fp")))
+        })
+        .flatten();
+    Some((sealed, fp))
 }
 
 /// The records of a book's backup log, if it can be read.

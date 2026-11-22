@@ -36,6 +36,13 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
     )
 }
 
+/// A context for tests of logic, not of durability: nothing is synced.
+fn fast() -> Ctx {
+    // The proof after a backup has tests of its own (backup_repair.rs); the
+    // properties here prove what they make by restoring it.
+    Ctx::new().with_no_sync().with_proof_skipped()
+}
+
 fn plain(folder: &Path) -> Destination {
     Destination {
         folder: folder.to_path_buf(),
@@ -156,7 +163,7 @@ proptest! {
         for op in &ops {
             books.apply(op);
             if matches!(op, Op::Backup) {
-                write_destination(&plain(&disk), &books.cut(), true, &Ctx::new()).unwrap();
+                write_destination(&plain(&disk), &books.cut(), true, &fast()).unwrap();
                 let after = tree(&disk);
                 for (name, bytes) in &before {
                     prop_assert_eq!(after.get(name), Some(bytes), "{} changed or went", name);
@@ -180,14 +187,14 @@ proptest! {
         for op in &ops {
             books.apply(op);
             if matches!(op, Op::Backup) {
-                let w = write_destination(&plain(&disk), &books.cut(), true, &Ctx::new()).unwrap();
+                let w = write_destination(&plain(&disk), &books.cut(), true, &fast()).unwrap();
                 if w.new {
                     heads.push((w.number, w.head));
                 }
             }
         }
         // (A last backup, so there is at least one.)
-        let w = write_destination(&plain(&disk), &books.cut(), true, &Ctx::new()).unwrap();
+        let w = write_destination(&plain(&disk), &books.cut(), true, &fast()).unwrap();
         if w.new {
             heads.push((w.number, w.head));
         }
@@ -240,9 +247,15 @@ proptest! {
         let count = Arc::new(AtomicUsize::new(0));
         let rival = {
             let (disk, second, count) = (disk.clone(), second.clone(), count.clone());
-            Ctx::new().with_faults(Arc::new(move |_, _| {
+            fast().with_faults(Arc::new(move |_, _| {
                 if count.fetch_add(1, Ordering::SeqCst) == at {
-                    write_destination(&plain(&disk), &second, true, &Ctx::new()).unwrap();
+                    write_destination(
+                        &plain(&disk),
+                        &second,
+                        true,
+                        &fast(),
+                    )
+                    .unwrap();
                 }
                 false
             }))
@@ -275,11 +288,19 @@ proptest! {
         for op in &ops {
             books.apply(op);
         }
-        write_destination(&plain(&disk), &books.cut(), true, &Ctx::new()).unwrap();
+        write_destination(
+            &plain(&disk),
+            &books.cut(),
+            true,
+            &fast(),
+        )
+        .unwrap();
         let set = disk.join("wanderbooks-acme");
         let pieces: Vec<String> = tree(&set)
             .into_keys()
-            .filter(|n| !n.starts_with("manifests/") && n != "READ-ME.txt")
+            .filter(|n| {
+                !n.starts_with("manifests/") && !n.starts_with("proofs/") && n != "READ-ME.txt"
+            })
             .collect();
         let name = &pieces[pick.index(pieces.len())];
         let path = set.join(name);
@@ -309,7 +330,7 @@ proptest! {
             folder: disk.clone(),
             key: Some(BackupKey::generate("the right words, exactly").unwrap()),
         };
-        write_destination(&dest, &books.cut(), true, &Ctx::new()).unwrap();
+        write_destination(&dest, &books.cut(), true, &fast()).unwrap();
         let scratch = dir.path().join("v");
         let got = prove(&disk, Some(&wrong), &scratch);
         prop_assert!(matches!(got, Err(BackupError::WrongPassphrase)), "{got:?}");

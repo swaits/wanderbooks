@@ -223,8 +223,17 @@ fn a_taken_number_or_name_is_never_replaced_on_a_disk_that_makes_no_links() {
 
 const PASS: &str = "correct horse battery staple";
 
+/// The count of derived keys is the process's: the tests that read it, and
+/// every test that derives one, take turns.
+static KEYS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    KEYS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn sealed_pieces_are_spread_over_folders_as_the_plain_form_does() {
+    let _turn = one_at_a_time();
     let dir = tempfile::tempdir().unwrap();
     let b = dir.path().join("book");
     let mut s = book(&b);
@@ -295,6 +304,7 @@ fn set_header(header: &Path, edit: impl Fn(&mut serde_json::Value)) {
 
 #[test]
 fn a_header_cannot_ask_for_more_than_a_few_times_what_this_program_spends() {
+    let _turn = one_at_a_time();
     let dir = tempfile::tempdir().unwrap();
     let b = dir.path().join("book");
     let s = book(&b);
@@ -330,6 +340,7 @@ fn a_header_cannot_ask_for_more_than_a_few_times_what_this_program_spends() {
 
 #[test]
 fn a_header_that_was_changed_reads_as_damage_and_not_as_a_wrong_passphrase() {
+    let _turn = one_at_a_time();
     let dir = tempfile::tempdir().unwrap();
     let b = dir.path().join("book");
     let s = book(&b);
@@ -365,6 +376,7 @@ fn a_header_that_was_changed_reads_as_damage_and_not_as_a_wrong_passphrase() {
 
 #[test]
 fn a_folder_of_sealed_sets_costs_one_key_derivation_per_setting_not_one_per_set() {
+    let _turn = one_at_a_time();
     let dir = tempfile::tempdir().unwrap();
     let b = dir.path().join("book");
     let s = book(&b);

@@ -1148,8 +1148,13 @@ pub struct RestorePreview {
     pub origin: Option<String>,
     /// Whether it is protected by a passphrase.
     pub sealed: bool,
-    /// Newer backups in it that were not whole and were passed over.
+    /// Newer backups in it that were not whole or were damaged and were
+    /// passed over: not zero means this is not the newest backup there is.
     pub passed_over: u64,
+    /// When this backup was made (UTC).
+    pub written: Option<String>,
+    /// When the newest backup there is was made (UTC), if it can be read.
+    pub newest_written: Option<String>,
 }
 
 /// What [`Root::restore`] did.
@@ -1258,6 +1263,8 @@ impl Root {
                 origin: v.book,
                 sealed: v.key.is_some(),
                 passed_over: v.passed_over as u64,
+                written: Some(v.written.clone()),
+                newest_written: v.newest_written.clone(),
             })
         })()
         .map_err(|e| self.hide(e))

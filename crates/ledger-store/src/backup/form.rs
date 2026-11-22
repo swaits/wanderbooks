@@ -19,6 +19,10 @@ pub(crate) const VERSION: u32 = 1;
 pub(crate) const SET_PREFIX: &str = "wanderbooks-";
 /// The folder of manifests in a set.
 pub(crate) const MANIFESTS: &str = "manifests";
+/// The folder of proof marks in a set: one tiny file per manifest whose
+/// proof (write.rs) came out whole, so a manifest whose proof was cut short
+/// is proven by the next backup, even one with nothing new to write.
+pub(crate) const PROOFS: &str = "proofs";
 /// The words a person can open.
 pub(crate) const READ_ME: &str = "READ-ME.txt";
 /// The sealed form's header: how to derive the key.
@@ -208,6 +212,11 @@ pub(crate) fn manifest_path(number: u64, sealed: bool) -> String {
     } else {
         format!("{MANIFESTS}/{number:06}.json")
     }
+}
+
+/// The mark that manifest `number` was proven whole.
+pub(crate) fn proof_path(number: u64) -> String {
+    format!("{PROOFS}/{number:06}")
 }
 
 /// The number a manifest file name carries, if it is one.

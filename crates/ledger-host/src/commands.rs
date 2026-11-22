@@ -749,7 +749,7 @@ fn books_usage(prog: &str) {
         "       {prog} adopt DATA-DIR --id ID [--toml FILE] [--config-json FILE] [--vault DIR --vault-key FILE | --no-vault] [--skip-unknown] [--yes]"
     );
     eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
-    eprintln!("       {prog} back-up ID [--new-disk]");
+    eprintln!("       {prog} back-up ID [--new-disk | --new-set]");
     eprintln!("       {prog} backup-status ID");
     eprintln!(
         "       {prog} backup-setup ID [--folder FOLDER] [--passphrase | --remove-passphrase]"
@@ -772,7 +772,7 @@ fn books_usage(prog: &str) {
     eprintln!("  create  start new, empty books (base currency USD unless given)");
     eprintln!("  adopt   copy existing books in, verified; the original is left as it was");
     eprintln!(
-        "  back-up back the books up now to every backup their settings name (--new-disk: the backup folder's disk is new)"
+        "  back-up back the books up now to every backup their settings name (--new-disk: the backup folder's disk is new; --new-set: the folder holds a longer history of these books, as after a restore from an older backup, so begin a new set beside it)"
     );
     eprintln!(
         "  restore bring back a backup (your backup folder, the folder of one set of books in it, or a backup file), proven whole first: as new books, or replacing books (kept in legacy/)"
@@ -806,6 +806,7 @@ pub fn books(
     let mut yes = false;
     let mut replace = false;
     let mut new_disk = false;
+    let mut new_set = false;
     let mut folder: Option<String> = None;
     let mut ask_passphrase = false;
     let mut remove_passphrase = false;
@@ -829,6 +830,7 @@ pub fn books(
             "--skip-unknown" => skip_unknown = true,
             "--replace" => replace = true,
             "--new-disk" => new_disk = true,
+            "--new-set" => new_set = true,
             "--yes" => yes = true,
             "--help" | "-h" => {
                 books_usage(prog);
@@ -983,7 +985,7 @@ pub fn books(
             };
         }
         ["back-up", book] => {
-            return match back_up_now(&common, book, new_disk) {
+            return match back_up_now(&common, book, new_disk, new_set) {
                 Ok(lines) => {
                     for line in lines {
                         println!("{line}");
@@ -1225,14 +1227,23 @@ fn database_line(b: &admin::BookStatus) -> Option<String> {
 
 /// Back the books `book` up now (the server does it): what came of it, a
 /// line each; Err when it couldn't be done, or a target didn't take it.
-pub fn back_up_now(common: &Common, book: &str, new_disk: bool) -> Result<Vec<String>, String> {
-    match with_server(
-        common,
+pub fn back_up_now(
+    common: &Common,
+    book: &str,
+    new_disk: bool,
+    new_set: bool,
+) -> Result<Vec<String>, String> {
+    let request = if new_set {
+        Request::BackUpNewSet {
+            id: book.to_string(),
+        }
+    } else {
         Request::BackUpNow {
             id: book.to_string(),
             new_disk,
-        },
-    )? {
+        }
+    };
+    match with_server(common, request)? {
         Response::BackedUp { head_seq, targets } => {
             let lines = backed_up_lines(head_seq, &targets);
             if targets.is_empty() || targets.iter().any(|t| t.problem.is_some()) {
@@ -1298,6 +1309,25 @@ fn when(utc: &str) -> String {
     )
 }
 
+/// What a restore says before anything else when it is not of the newest
+/// backup there is: both dates, and how many backups it passes over.
+pub fn older_backup_words(p: &admin::RestorePreview) -> String {
+    let day = |at: &Option<String>| at.as_deref().map(when);
+    let (this, newest) = (day(&p.written), day(&p.newest_written));
+    let dates = match (this, newest) {
+        (Some(a), Some(b)) => format!(
+            " This backup is from {a}; the newest in the folder is from {b} and is not whole."
+        ),
+        (Some(a), None) => format!(" This backup is from {a}."),
+        _ => String::new(),
+    };
+    format!(
+        "NOT THE NEWEST BACKUP: this restore passes over {} newer backup{} that did not prove whole, and brings back older books than the folder holds.{dates} Anything written after this backup is not in it.",
+        p.passed_over,
+        if p.passed_over == 1 { "" } else { "s" }
+    )
+}
+
 /// The words for a backup standing, as an ordinary person reads them.
 pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
     let mut lines = Vec::new();
@@ -1309,6 +1339,19 @@ pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
                 lines.push("The disk with the backup is not connected: connect it, and the next backup goes there. If it is a new disk, say so when you back up now.".into());
             } else if let Some(why) = &s.last_error {
                 lines.push(format!("The last backup didn't work: {why}"));
+                match s.error_kind.as_deref() {
+                    Some("ahead") => lines.push("This usually means the books were restored from an older backup. To carry on with these books, start a new backup set: the old one stays in the folder, untouched.".into()),
+                    Some("elsewhere") => lines.push("Nothing was written there. If these are the right books, choose another backup folder.".into()),
+                    Some("key_missing") => lines.push("Enter the backup passphrase again in the backup settings to carry on, or remove the passphrase there to back up without one.".into()),
+                    _ => {}
+                }
+            }
+            if !s.damaged_files.is_empty() {
+                lines.push(format!(
+                    "{} file(s) in the backup folder were found damaged and were written again; the damaged ones are left where they are (nothing in the folder is ever deleted), and you may delete them yourself: {}",
+                    s.damaged_files.len(),
+                    s.damaged_files.join(", ")
+                ));
             }
             match (&s.last_ok_at, s.through_seq) {
                 (Some(at), Some(seq)) => lines.push(format!(
@@ -1326,9 +1369,16 @@ pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
                 _ => lines.push("No backup has been made there yet.".into()),
             }
             match (&s.last_drill_at, &s.drill_error) {
-                (_, Some(why)) => lines.push(format!(
-                    "The weekly check that the backup can be restored failed: {why}"
-                )),
+                (_, Some(why)) => {
+                    lines.push(format!(
+                        "The weekly check that the backup can be restored failed: {why}"
+                    ));
+                    if s.error_kind.as_deref() == Some("newest_damaged")
+                        || why.contains("newest backup")
+                    {
+                        lines.push("Back up again now: a restore from this folder would give older books until a backup after the damage is made.".into());
+                    }
+                }
                 (Some(at), None) => lines.push(format!("Proven restorable {at} (checked weekly).")),
                 (None, None) if s.through_seq.is_some() => {
                     lines.push("Not yet proven restorable: it is checked weekly.".into())
@@ -1340,6 +1390,9 @@ pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
             } else {
                 "Not protected by a passphrase.".into()
             });
+            if let Some(sync) = &s.sync {
+                lines.push(sync.clone());
+            }
         }
     }
     if let Some(note) = &s.note {
@@ -2903,10 +2956,9 @@ pub fn plan_restore(
         preview.vault_files
     )];
     if preview.passed_over > 0 {
-        lines.push(format!(
-            "{} newer backup(s) in it were damaged and passed over: this is the newest that is whole.",
-            preview.passed_over
-        ));
+        // First, before anything else: books older than the newest backup
+        // there is are not what a person expects to get.
+        lines.insert(0, older_backup_words(&preview));
     }
     if preview.sealed {
         lines.push(
@@ -4375,6 +4427,9 @@ mod tests {
             drill_error: None,
             disconnected: false,
             note: None,
+            error_kind: None,
+            damaged_files: Vec::new(),
+            sync: None,
         };
         let say = |s: &admin::BackupStanding| backup_words(s).join(" | ");
         assert_eq!(say(&base), "Not backed up: no backup folder is chosen yet.");

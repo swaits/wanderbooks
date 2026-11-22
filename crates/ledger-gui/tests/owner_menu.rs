@@ -77,6 +77,7 @@ impl Owner for Fake {
             ],
             folder: None,
             sealed: false,
+            ahead: false,
         })
     }
     fn set_up_backups(

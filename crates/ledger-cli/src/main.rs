@@ -299,7 +299,11 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn back_up_now(&self, book: &str) -> Result<Vec<String>, String> {
-        ledger_host::commands::back_up_now(&self.common, book, false)
+        ledger_host::commands::back_up_now(&self.common, book, false, false)
+    }
+
+    fn start_new_backup_set(&self, book: &str) -> Result<Vec<String>, String> {
+        ledger_host::commands::back_up_now(&self.common, book, false, true)
     }
 
     fn backup_state(&self, book: &str) -> Result<ledger_gui::owner::BackupState, String> {
@@ -308,6 +312,7 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             lines: ledger_host::commands::backup_words(&s),
             folder: s.folder.clone(),
             sealed: s.sealed,
+            ahead: s.error_kind.as_deref() == Some("ahead"),
         })
     }
 

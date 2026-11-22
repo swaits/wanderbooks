@@ -200,6 +200,11 @@ impl Set {
         Ok(n)
     }
 
+    /// Whether the proof after a backup came out whole for manifest `n`.
+    pub(crate) fn proven(&self, n: u64) -> bool {
+        matches!(self.io.len(&proof_path(n)), Ok(Some(_)))
+    }
+
     fn read_small(&self, rel: &str) -> Result<Vec<u8>, BackupError> {
         match self.io.len(rel)? {
             Some(len) if len <= SMALL_MAX => {}
@@ -547,6 +552,18 @@ pub struct Found {
     pub sealed: bool,
 }
 
+impl Found {
+    /// A set already open (a backup file just written), to be proven.
+    pub(crate) fn of(set: Set, key: Option<BackupKey>, book: &str) -> Found {
+        Found {
+            sealed: set.sealed(),
+            set,
+            key,
+            book: Some(book.to_string()),
+        }
+    }
+}
+
 /// One set of books in a folder, as listed for a person to choose from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -727,6 +744,9 @@ pub struct Verified {
     pub number: u64,
     /// When it was made (UTC), as its manifest says.
     pub written: String,
+    /// The journal's length in the backup: the books built from it hold
+    /// the journal as it was, and may carry the books' own recovery after.
+    pub journal_bytes: u64,
     /// How many newer backups there are that were passed over: not whole,
     /// or damaged. Not zero means this is not the newest backup there is.
     pub passed_over: usize,
@@ -922,15 +942,23 @@ fn prove_books(
 ) -> Result<(u64, (u64, String)), BackupError> {
     ctx.phase("replay");
     let _stoppable = ctx.stop_flag().map(crate::cancel::scope);
-    if matches!(depth, Depth::Chain) {
-        // The hash chain, up to the head, before the books are opened.
-        let lines = crate::journal::read_and_verify_journal(&scratch.join(crate::JOURNAL_FILE))?;
-        let last = lines.last().map(|l| l.seq).unwrap_or(0);
-        if last != m.head.seq {
-            return Err(BackupError::Damaged(format!(
-                "its journal ends at event {last}, but the backup records another head"
-            )));
-        }
+    // The hash chain, up to the head, before the books are opened: the
+    // journal the pieces make ends at the head the manifest records. (A
+    // backup taken while a call is under way ends with the call's lines
+    // unfinished: opening the books settles it by appending a line, which
+    // is the books' recovery and not the backup's head.)
+    let lines = crate::journal::read_and_verify_journal(&scratch.join(crate::JOURNAL_FILE))?;
+    let (last_seq, last_hash) = match lines.last() {
+        Some(l) => (
+            l.seq,
+            crate::journal::sha256_hex(l.to_canonical().as_bytes()),
+        ),
+        None => (0, String::new()),
+    };
+    if last_seq != m.head.seq || (last_seq > 0 && last_hash != m.head.hash) {
+        return Err(BackupError::Damaged(format!(
+            "its journal ends at event {last_seq}, but the backup records another head"
+        )));
     }
     let mut store = crate::Store::open(scratch)?;
     if matches!(depth, Depth::Whole) {
@@ -949,7 +977,7 @@ fn prove_books(
         Depth::Whole => store.verify_blobs()?,
         Depth::Chain => audit.files_read,
     };
-    let head = store.head();
+    let opened = store.head();
     let tins: Vec<String> = store
         .ledger()
         .parties()
@@ -982,13 +1010,14 @@ fn prove_books(
             ));
         }
     }
-    if head.0 != m.head.seq || head.1 != m.head.hash {
+    // Opening may only have added the books' own recovery after the head.
+    if opened.0 < m.head.seq {
         return Err(BackupError::Damaged(format!(
             "its journal ends at event {}, but the backup records another head",
-            head.0
+            opened.0
         )));
     }
-    Ok((blobs, head))
+    Ok((blobs, (m.head.seq, m.head.hash.clone())))
 }
 
 /// The books built from manifest `m` into `scratch` and proven, whole.
@@ -1102,6 +1131,7 @@ fn verify_one(
             book: Some(m.book.clone()),
             number: m.number,
             written: m.written.clone(),
+            journal_bytes: m.journal.bytes,
             passed_over: passed,
             newest_written: if n == newest {
                 Some(m.written.clone())
@@ -1153,9 +1183,9 @@ pub fn verify_found(found: &Found, scratch: &Path, ctx: &Ctx) -> Result<Verified
 
 /// Whether the journal at `backup` is a byte prefix of the one at `live`
 /// (a drill: the backup holds the book's history, nothing else).
-pub fn is_prefix(live: &Path, backup: &Path, ctx: &Ctx) -> Result<bool, BackupError> {
+pub fn is_prefix(live: &Path, backup: &Path, len: u64, ctx: &Ctx) -> Result<bool, BackupError> {
     let mut a = std::fs::File::open(live)?;
-    let mut b = std::fs::File::open(backup)?;
+    let mut b = std::io::Read::take(std::fs::File::open(backup)?, len);
     let (mut x, mut y) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
     loop {
         ctx.check("comparing journals")?;
@@ -1228,7 +1258,12 @@ pub fn drill(
                     v.head.0, e.0
                 )))
             } else {
-                match is_prefix(live, &v.tree.join(crate::JOURNAL_FILE), ctx) {
+                match is_prefix(
+                    live,
+                    &v.tree.join(crate::JOURNAL_FILE),
+                    v.journal_bytes,
+                    ctx,
+                ) {
                     Ok(true) => Ok(v.head),
                     Ok(false) => Err(BackupError::Damaged(
                         "its journal isn't this book's history".into(),
@@ -1301,9 +1336,9 @@ pub fn prove_local(
         }
         ctx.phase("compare");
         ctx.check("comparing")?;
-        if std::fs::read(book_dir.join(crate::JOURNAL_FILE)).unwrap_or_default()
-            != std::fs::read(v.tree.join(crate::JOURNAL_FILE))?
-        {
+        let held = std::fs::read(v.tree.join(crate::JOURNAL_FILE))?;
+        let held = &held[..(v.journal_bytes as usize).min(held.len())];
+        if std::fs::read(book_dir.join(crate::JOURNAL_FILE)).unwrap_or_default() != held {
             return Err(BackupError::Damaged(
                 "its journal isn't the books' own, byte for byte".into(),
             ));

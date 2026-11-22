@@ -147,6 +147,14 @@ pub enum Request {
         #[serde(default)]
         new_disk: bool,
     },
+    /// Begin a new backup set beside the old one in the backup folder, and
+    /// back the books up to it (the books are behind the folder's: as
+    /// after a restore from an older backup): only at the person's
+    /// request; the old set is never touched.
+    BackUpNewSet {
+        /// The books.
+        id: String,
+    },
     /// Set up a book's backups (D-91, D-92): the folder, and the
     /// passphrase.
     BackupSetup {
@@ -696,9 +704,16 @@ pub struct RestorePreview {
     /// Whether it is protected by a passphrase.
     #[serde(default)]
     pub sealed: bool,
-    /// Newer backups in it that were not whole and were passed over.
+    /// Newer backups in it that were not whole or were damaged and were
+    /// passed over: not zero means this is not the newest backup there is.
     #[serde(default)]
     pub passed_over: u64,
+    /// When this backup was made (UTC), as its manifest says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written: Option<String>,
+    /// When the newest backup there is was made (UTC), if it can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_written: Option<String>,
 }
 
 /// What a restore did.
@@ -770,6 +785,17 @@ pub struct BackupStanding {
     /// What to know or do: none set up, an older kind no longer used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// What kind of trouble the last backup or check had (`ahead`,
+    /// `elsewhere`, `key_missing`, `not_downloaded`, `newest_damaged`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// Files in the backup folder found damaged and written again; each is
+    /// left where it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub damaged_files: Vec<String>,
+    /// What to tell a person of a folder a sync service keeps (or may).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<String>,
 }
 
 /// The server's answer.
@@ -947,7 +973,7 @@ pub fn call_within(
         Request::Create { .. } | Request::Adopt { .. } | Request::Restore { .. } => {
             Some("`wanderbooks books list` shows the books there are")
         }
-        Request::BackUpNow { .. } => {
+        Request::BackUpNow { .. } | Request::BackUpNewSet { .. } => {
             Some("`wanderbooks books back-up` again backs up whatever it didn't")
         }
         Request::TokenCreate { .. } | Request::TokenRevoke { .. } => {
@@ -1162,6 +1188,8 @@ mod tests {
                 origin: Some("acme".into()),
                 sealed: false,
                 passed_over: 0,
+                written: None,
+                newest_written: None,
             }),
             Response::Restored(Restored {
                 id: "acme".into(),

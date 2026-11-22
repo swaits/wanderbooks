@@ -8,8 +8,8 @@
 
 use super::cut::Cut;
 use super::io::{Fill, Put, PutKind, SetIo};
-use super::read::Set;
-use super::write::{Written, write_into_set};
+use super::read::{Found, Set, verify_found};
+use super::write::{Written, proof_scratch, write_into_set};
 use super::{BackupError, Ctx};
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -173,6 +173,19 @@ pub fn save_file(
             .finish()
             .map_err(|e| BackupError::Io(std::io::Error::other(e).kind()))?;
         file.sync_all()?;
+        // Read back as a restore would read it, and proven whole (every
+        // piece re-hashed, the chain replayed, the books opened), before it
+        // is given its name: a file by that name is a backup that proved.
+        let reader = Set {
+            io: open(&aside, ctx)?,
+            keys: key.map(|k| k.keys()),
+            ctx: ctx.clone(),
+        };
+        let found = Found::of(reader, key.cloned(), cut.book());
+        let scratch = proof_scratch(cut)?;
+        let proven = verify_found(&found, &scratch, ctx);
+        let _ = std::fs::remove_dir_all(&scratch);
+        proven?;
         Ok(written)
     });
     match result {

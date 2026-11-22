@@ -452,6 +452,7 @@ fn pieces(set: &Path) -> Vec<PathBuf> {
         .keys()
         .filter(|n| {
             !n.starts_with("manifests/")
+                && !n.starts_with("proofs/")
                 && !n.ends_with("READ-ME.txt")
                 && !n.ends_with("header.json")
         })
@@ -562,7 +563,13 @@ fn a_program_that_dies_at_any_write_leaves_what_proved_whole_before() {
     let mut s = book(&b);
     let base_disk = dir.path().join("base");
     std::fs::create_dir(&base_disk).unwrap();
-    write_destination(&plain(&base_disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    write_destination(
+        &plain(&base_disk),
+        &cut(&b, &s),
+        true,
+        &Ctx::new().with_proof_skipped(),
+    )
+    .unwrap();
     let first_head = s.head();
     more(&mut s, 1);
     let c = cut(&b, &s);
@@ -573,10 +580,12 @@ fn a_program_that_dies_at_any_write_leaves_what_proved_whole_before() {
         let disk = dir.path().join("probe");
         copy_tree(&base_disk, &disk);
         let n = counted.clone();
-        let ctx = Ctx::new().with_faults(Arc::new(move |_, _| {
-            n.fetch_add(1, Ordering::SeqCst);
-            false
-        }));
+        let ctx = Ctx::new()
+            .with_proof_skipped()
+            .with_faults(Arc::new(move |_, _| {
+                n.fetch_add(1, Ordering::SeqCst);
+                false
+            }));
         write_destination(&plain(&disk), &c, true, &ctx).unwrap();
         counted.load(Ordering::SeqCst)
     };
@@ -588,9 +597,11 @@ fn a_program_that_dies_at_any_write_leaves_what_proved_whole_before() {
         let n = Arc::new(AtomicUsize::new(0));
         let ctx = {
             let n = n.clone();
-            Ctx::new().with_faults(Arc::new(move |_, _| {
-                n.fetch_add(1, Ordering::SeqCst) == die_at
-            }))
+            Ctx::new()
+                .with_proof_skipped()
+                .with_faults(Arc::new(move |_, _| {
+                    n.fetch_add(1, Ordering::SeqCst) == die_at
+                }))
         };
         let err = write_destination(&plain(&disk), &c, true, &ctx).unwrap_err();
         assert_eq!(err, BackupError::Died, "point {die_at}");
@@ -609,7 +620,8 @@ fn a_program_that_dies_at_any_write_leaves_what_proved_whole_before() {
         assert!(live.starts_with(&restored), "point {die_at}");
         // And the next run goes on from it (proven again at some points:
         // each proof replays the books).
-        let w = write_destination(&plain(&disk), &c, true, &Ctx::new()).unwrap();
+        let w =
+            write_destination(&plain(&disk), &c, true, &Ctx::new().with_proof_skipped()).unwrap();
         assert_eq!(w.head, s.head());
         if die_at % 6 == 0 {
             let again = prove(&disk, None, dir.path(), &format!("again-{die_at}")).unwrap();

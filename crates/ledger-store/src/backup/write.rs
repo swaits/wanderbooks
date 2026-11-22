@@ -804,12 +804,36 @@ fn put_manifest(
 
 /// A folder for the proof's scratch books: private, in the book's own
 /// `ops/`, named for this call.
-fn proof_scratch(cut: &Cut) -> Result<PathBuf, BackupError> {
-    let ops = crate::root::private_book_folder(cut.dir(), crate::ops::OPS_DIR)
-        .map_err(|e| BackupError::Damaged(e.to_string()))?;
+pub(crate) fn proof_scratch(cut: &Cut) -> Result<PathBuf, BackupError> {
+    let ops = cut.dir().join(crate::ops::OPS_DIR);
+    if !ops.is_dir() {
+        // Made private by the one that makes it; one that lost a race to
+        // make it finds it there.
+        let made = crate::root::private_book_folder(cut.dir(), crate::ops::OPS_DIR);
+        if !ops.is_dir() {
+            return Err(BackupError::Damaged(
+                made.err().map(|e| e.to_string()).unwrap_or_default(),
+            ));
+        }
+    }
     let mut r = [0u8; 6];
-    let _ = getrandom::getrandom(&mut r);
+    getrandom::getrandom(&mut r).map_err(|e| BackupError::Io(std::io::Error::from(e).kind()))?;
     Ok(ops.join(format!("proof-{}", hex::encode(r))))
+}
+
+/// Mark manifest `number` as proven whole: a tiny file put once. A mark
+/// that can't be made (a full disk) costs only a proof again at the next
+/// backup; a stop is a stop.
+fn mark_proven(set: &Set, number: u64) -> Result<(), BackupError> {
+    match set.io.put(&proof_path(number), PutKind::Once, &mut |w| {
+        w.write_all(b"proven whole\n")
+    }) {
+        Ok(_) => Ok(()),
+        Err(e) => match uncarry(e) {
+            stop @ (BackupError::Died | BackupError::Cancelled(_)) => Err(stop),
+            _ => Ok(()),
+        },
+    }
 }
 
 /// The most times a backup is written again to repair what its own proof
@@ -835,6 +859,7 @@ fn prove_and_repair(
         ctx.check("proving the backup")?;
         let proof = super::read::prove_written(set, number, &added, &proof_scratch(cut)?)?;
         if proof.damaged.is_empty() {
+            mark_proven(set, number)?;
             return Ok(Written {
                 number,
                 head: cut.head().clone(),
@@ -893,6 +918,7 @@ pub(crate) fn write_into_set(
     prove: bool,
 ) -> Result<Written, BackupError> {
     ensure_markers(set)?;
+    let prove = prove && !ctx.skips_proof();
     for _ in 0..ATTEMPTS {
         ctx.check("backing up")?;
         let numbers = set.numbers()?;
@@ -903,6 +929,15 @@ pub(crate) fn write_into_set(
         if let Some(p) = &prev
             && manifest.same_content(p)
         {
+            // Nothing new. But a manifest whose proof was cut short (a
+            // close, a stop, a death) is not yet known whole: proven now.
+            if prove && !set.proven(p.number) {
+                let w = prove_and_repair(set, cut, p.number, BTreeSet::new(), Vec::new(), ctx)?;
+                return Ok(Written {
+                    new: w.number != p.number,
+                    ..w
+                });
+            }
             return Ok(Written {
                 number: p.number,
                 head: cut.head().clone(),

@@ -739,3 +739,52 @@ fn a_backup_cut_while_the_vault_is_being_written_restores_a_vault_that_matches_t
             .any(|n| n.contains(".staged-") || n.contains(".purging-"))
     );
 }
+
+#[test]
+fn a_proof_cut_short_by_a_close_ends_cleanly_and_is_made_again_by_the_next_backup() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let s = book(&b);
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    // The books close while the backup's proof is under way (here: as it
+    // replays the chain).
+    let stop = Arc::new(AtomicBool::new(false));
+    let ctx = {
+        let stop = stop.clone();
+        Ctx::new()
+            .with_stop(stop.clone())
+            .with_phase_watch(Arc::new(move |p: &str| {
+                if p == "replay" {
+                    stop.store(true, Ordering::SeqCst);
+                }
+            }))
+    };
+    let err = write_destination(&plain(&disk), &cut(&b, &s), true, &ctx).unwrap_err();
+    assert!(matches!(err, BackupError::Cancelled(_)), "{err:?}");
+    // Nothing of the proof is left behind in the books' folder, and the
+    // manifest that was written is there but is not marked proven.
+    let left: Vec<_> = std::fs::read_dir(b.join("ops"))
+        .map(|d| {
+            d.flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("proof-"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(left.is_empty(), "scratch books left: {left:?}");
+    let set = set_of(&disk);
+    assert!(set.join("manifests/000001.json").is_file());
+    assert!(!set.join("proofs/000001").exists());
+    // The next backup has nothing new to write, and still proves it: it
+    // never says good of a backup that was not proven.
+    let w = write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    assert_eq!(w.number, 1);
+    assert!(!w.new, "{w:?}");
+    assert!(set.join("proofs/000001").is_file());
+    // Once proven, a backup with nothing new is only looked at.
+    let before = tree(&disk);
+    let w = write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    assert!(!w.new);
+    assert_eq!(tree(&disk), before);
+}

@@ -157,6 +157,10 @@ pub struct BackupState {
     pub folder: Option<String>,
     /// Protected by a passphrase.
     pub sealed: bool,
+    /// The folder holds a longer history of these books than they have
+    /// now (the books were restored from an older backup): a new backup set
+    /// can be started beside the old one.
+    pub ahead: bool,
 }
 
 /// A restore previewed: what it would do, and what it is of (INVARIANT 3).
@@ -465,6 +469,12 @@ pub trait Owner: Send + Sync {
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String>;
     /// Back the books `book` up now.
     fn back_up_now(&self, book: &str) -> Result<Vec<String>, String>;
+    /// Start a new backup set beside the old one in the backup folder and
+    /// back the books up to it (their history is the beginning of the old
+    /// set's): the old set is never touched.
+    fn start_new_backup_set(&self, _book: &str) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
     /// How the books `book`'s backups stand. Blocks.
     fn backup_state(&self, _book: &str) -> Result<BackupState, String> {
         Err("not here".into())
@@ -677,6 +687,10 @@ impl Drop for BackupForm {
 
 /// The words a person is told when setting a passphrase: what it does, and
 /// that it cannot be recovered (D-92).
+/// What the first line of a restore that is not of the newest backup begins
+/// with (ledger-host `older_backup_words`): the window shows it prominently.
+pub const OLDER_BACKUP: &str = "NOT THE NEWEST BACKUP";
+
 pub const PASSPHRASE_WARNING: &str = "Every file in the backup folder is sealed: only this passphrase opens it, and the files say nothing about your books but how many and how big. Your computer keeps the key so backups stay automatic. A forgotten passphrase cannot be recovered, by anyone, and backups made without it before this stay as they were. Write it down somewhere safe.";
 
 /// The format upgrade's dialog (INVARIANT 5).
@@ -1344,7 +1358,16 @@ impl OwnerMenu {
                     if let Some(plan) = &form.plan {
                         ui.separator();
                         for line in &plan.lines {
-                            ui.label(line);
+                            // A restore that is not of the newest backup
+                            // says so first and in the warning colour.
+                            if line.starts_with(OLDER_BACKUP) {
+                                ui.colored_label(
+                                    crate::theme::pal(ui.ctx()).warning,
+                                    egui::RichText::new(line).strong(),
+                                );
+                            } else {
+                                ui.label(line);
+                            }
                         }
                     }
                     ui.horizontal(|ui| {
@@ -1475,6 +1498,20 @@ fn backups_dialog(
             Some(Ok(state)) => {
                 for line in &state.lines {
                     ui.label(line);
+                }
+                if state.ahead
+                    && ui
+                        .button("Start a new backup set here")
+                        .on_hover_text("The old set stays in the folder, untouched; these books back up to a new one beside it")
+                        .clicked()
+                {
+                    let (o, b) = (owner.clone(), book.to_string());
+                    *run = Some((
+                        "Backups".into(),
+                        Effect::Changes("Starting a new backup set"),
+                        Box::new(move || o.start_new_backup_set(&b)),
+                    ));
+                    *close = true;
                 }
             }
         }

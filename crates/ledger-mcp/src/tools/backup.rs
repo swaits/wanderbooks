@@ -25,6 +25,12 @@ pub struct BackUpNowParams {
     /// should hold one is otherwise a disk not connected.
     #[serde(default)]
     pub new_disk: bool,
+    /// The backup folder holds a longer history of these books than they
+    /// have now (a restore from an older backup): begin a new backup set
+    /// beside the old one, which is never touched. Only when the human
+    /// says so.
+    #[serde(default)]
+    pub new_set: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -39,6 +45,16 @@ pub struct TargetOut {
     pub through_seq: Option<u64>,
     /// More than a day without the books' latest: tell the human.
     pub stale: bool,
+    /// What kind of trouble the last backup or check had: `ahead` (the
+    /// folder holds a longer history of these books: offer new_set),
+    /// `elsewhere` (other or diverged books), `key_missing` (the backups
+    /// are sealed and this computer lost the key: ask the human for the
+    /// passphrase), `not_downloaded` (files a sync service has not put here
+    /// yet), `newest_damaged` (a restore would give older books).
+    pub error_kind: Option<String>,
+    /// Files in the backup folder found damaged and written again (each is
+    /// left where it is): tell the human.
+    pub damaged_files: Vec<String>,
     /// Why its last backup failed, if it did.
     pub last_error: Option<String>,
     /// When its backup was last proven restorable (UTC), if ever: each
@@ -76,6 +92,8 @@ impl From<crate::backup::Status> for BackupOut {
                     last_ok_at: t.last_ok_at,
                     through_seq: t.through_seq,
                     stale: t.stale,
+                    error_kind: t.error_kind,
+                    damaged_files: t.damaged_files,
                     last_error: t.last_error,
                     last_drill_at: t.last_drill_at,
                     drill_error: t.drill_error,
@@ -102,7 +120,7 @@ impl BooksServer {
     #[tool(
         name = "books.back_up_now",
         title = "Back up now",
-        description = "Back the books up now to the backup folder the settings name, and answer how it went (as books.backup). new_disk: true only when the human says the backup folder's disk is new: the books' backup is then begun there again. Needs books:admin.",
+        description = "Back the books up now to the backup folder the settings name, and answer how it went (as books.backup). new_disk: true only when the human says the backup folder's disk is new: the books' backup is then begun there again. new_set: true only when the human says so after a backup failed because the folder holds a longer history of these books (error_kind ahead): a new set begins beside the old one. Needs books:admin.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -116,7 +134,11 @@ impl BooksServer {
     ) -> Result<Json<BackupOut>, String> {
         // Stopped by a close (backup.rs INVARIANT 11): said so, and on
         // record as stopped, not as an answer it gave.
-        match self.backups.run_with("asked", params.0.new_disk).await {
+        match self
+            .backups
+            .run_with_set("asked", params.0.new_disk, params.0.new_set)
+            .await
+        {
             Ok(status) => Ok(Json(status.into())),
             Err(why) if why.starts_with(crate::server::STOPPED_BY_CLOSE_WORDS) => {
                 crate::server::stopped_by_close();

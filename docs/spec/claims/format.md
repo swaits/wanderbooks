@@ -195,7 +195,7 @@ copy is new books of this version and moves to its format as it is made (the
 original keeps its own). The upgrade never weakens the gate: books declaring a
 feature this version doesn't know are newer, as above.
 
-*Enforced:* `ledger_store::format` (`current`, `JournalFormat::upgrade`), `Store::create`, `Store::upgrade_format`, `Root::adopt`, `ledger_store::backup::prove_local`, ledger-mcp `Backups::upgrade_format` and `local.rs` (the passphrase), ledger-host `host.rs` (the lease intent, handed to the server) and `commands.rs` (`books upgrade`, asking at open), ledger-gui `owner.rs` (the notice and the dialog).
+*Enforced:* `ledger_store::format` (`current`, `JournalFormat::upgrade`), `Store::create`, `Store::upgrade_format`, `Root::adopt`, `ledger_store::backup::read::prove_local`, ledger-mcp `Backups::upgrade_format` and `local.rs` (the passphrase), ledger-host `host.rs` (the lease intent, handed to the server) and `commands.rs` (`books upgrade`, asking at open), ledger-gui `owner.rs` (the notice and the dialog).
 *Checked:* `ledger-store` `tests/format_upgrade.rs` (new books in this version's format, a change waiting for the upgrade, every old-books fixture upgrading to its figures, a newer feature still refused), the unit tests in `format.rs`, `tests/root.rs` (adoption); `ledger-mcp` `local.rs` (`format_upgrade_waits_for_consent`, `no_upgrade_without_a_backup`, `no_upgrade_unless_the_backup_is_proven`); `ledger-host` `lease.rs` (`a_consent_never_shows_its_passphrase`); `ledger-cli` `tests/format_upgrade.rs` (from end to end); `ledger-gui` `tests/format_upgrade.rs`.
 
 **WB-format-4 Each projection schema in a file of its own.** (The lead's

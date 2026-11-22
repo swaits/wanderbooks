@@ -120,7 +120,7 @@ impl Drop for Step {
 }
 
 /// The test knob's file in a book's `ops/`: while it is there, a backup
-/// waits at each phase ([`Backups::slow_steps`]).
+/// waits at each phase (the `--slow-steps` knob).
 pub const SLOW_BACKUP: &str = "slow-backup";
 /// The file beside it that gets a line each time a backup reaches a phase
 /// and waits.

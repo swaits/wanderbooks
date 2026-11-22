@@ -30,8 +30,8 @@ scratch file it made a moment before. So a service that syncs the folder never
 sees a file change under it, and an earlier state of the books is always still
 there (the journal is the history: an earlier state is a shorter prefix, and
 each manifest marks one).
-*Enforced:* `ledger_store::backup::write_destination`,
-`ledger_store::backup::Destination`, `crates/ledger-store/src/backup/io.rs`.
+*Enforced:* `ledger_store::backup::write::write_destination`,
+`ledger_store::backup::write::Destination`, `crates/ledger-store/src/backup/io.rs`.
 *Checked:* `ledger-store` `tests/backup.rs`
 (`a_backup_is_the_book_and_proves_whole`,
 `a_program_that_dies_at_any_write_leaves_what_proved_whole_before`),
@@ -49,8 +49,8 @@ replays, every stored file re-hashes, every TIN record the books name and the
 key that opens them are there, the head is the one recorded. A manifest that is
 cut short or changed is no manifest. A run that dies leaves pieces no manifest
 names, which are harmless.
-*Enforced:* `ledger_store::backup::find`, `ledger_store::backup::verify_found`,
-`ledger_store::backup::drill`.
+*Enforced:* `ledger_store::backup::read::find`, `ledger_store::backup::read::verify_found`,
+`ledger_store::backup::read::drill`.
 *Checked:* `ledger-store` `tests/backup.rs`
 (`a_flipped_or_cut_piece_is_found_and_never_restored`,
 `the_text_read_from_a_stored_file_is_a_stored_file_too`).
@@ -61,7 +61,7 @@ restores only the head it previewed, as new books or replacing books (which are
 moved whole into the legacy folder, never deleted). When the newest manifest is
 damaged the newest whole one is used and the preview says how many were passed
 over. The backup's journal is a byte prefix of the live one (a drill checks it).
-*Enforced:* `ledger_store::backup::verify_found`, `ledger_store::root::Root::restore`,
+*Enforced:* `ledger_store::backup::read::verify_found`, `ledger_store::root::Root::restore`,
 `ledger_store::root::Root::restore_preview`.
 *Checked:* `ledger-store` `tests/backup_props.rs`
 (`any_whole_manifest_restores_a_prefix_of_the_books`),
@@ -77,7 +77,7 @@ holds other books or a different history, or a newer one than this computer has,
 and that is said, and nothing is written. A folder that took these books'
 backups and holds none now is a disk not connected, never made again where the
 disk should be unless the person says it is a new disk.
-*Enforced:* `ledger_store::backup::write_destination`,
+*Enforced:* `ledger_store::backup::write::write_destination`,
 `ledger_store::backup::BackupError`.
 *Checked:* `ledger-store` `tests/backup.rs`
 (`a_destination_of_other_books_or_another_history_is_never_written`,
@@ -95,7 +95,7 @@ that dies at any write point (a scratch file, a piece, the manifest) leaves a
 destination whose newest whole manifest is the one before, or the new one, and
 a restore from it is a prefix of the books. No lock a sync service ignores is
 relied on.
-*Enforced:* `ledger_store::backup::write_destination`,
+*Enforced:* `ledger_store::backup::write::write_destination`,
 `crates/ledger-store/src/backup/write.rs`.
 *Checked:* `ledger-store` `tests/backup.rs`
 (`two_programs_writing_one_destination_do_not_corrupt_it`,
@@ -107,7 +107,7 @@ relied on.
 is checked against what its manifest says, in length and in hash, and a sealed
 piece against its seal; a piece that fails ends the proof of that manifest, and
 nothing is put in the books' place from it.
-*Enforced:* `ledger_store::backup::verify_found`.
+*Enforced:* `ledger_store::backup::read::verify_found`.
 *Checked:* `ledger-store` `tests/backup_props.rs`
 (`any_flipped_or_cut_piece_is_found_never_restored`), `tests/backup.rs`
 (`a_flipped_or_cut_piece_is_found_and_never_restored`); `ledger-cli`
@@ -130,7 +130,7 @@ beside the old one and removing it makes the next backup plain: pieces already
 written are never rewritten, so the old ones stay as they were, sealed with the
 passphrase they were made with. A forgotten passphrase cannot be recovered, and
 the set-up says so.
-*Enforced:* `ledger_store::backup::BackupKey`,
+*Enforced:* `ledger_store::backup::seal::BackupKey`,
 `crates/ledger-store/src/backup/seal.rs`.
 *Checked:* `ledger-store` `tests/backup.rs`
 (`a_sealed_backup_gives_away_counts_and_sizes_only`,
@@ -144,7 +144,7 @@ zip of the set's folder form holding one manifest and only the pieces it names,
 sealed when the backups are, with the extension .wbbackup. A file by the name
 asked for is never written over, and is moved into place only when whole.
 Restore reads a destination folder, a set's own folder, or this file.
-*Enforced:* `ledger_store::backup::save_file`, `ledger_store::backup::FILE_EXTENSION`.
+*Enforced:* `ledger_store::backup::single::save_file`, `ledger_store::backup::single::FILE_EXTENSION`.
 *Checked:* `ledger-store` `tests/backup.rs`
 (`a_single_file_holds_the_same_backup_plain_or_sealed`).
 
@@ -179,7 +179,7 @@ store's lock.** The local backup is the same form in the book's own folder
 (`local-backup`), written and proven to hold the books exactly as they are
 (journal, vault and keys byte for byte, every stored file re-hashed) before
 the journal's format moves, all under the store's lock.
-*Enforced:* `ledger_store::backup::write_local`, `ledger_store::backup::prove_local`,
+*Enforced:* `ledger_store::backup::write::write_local`, `ledger_store::backup::read::prove_local`,
 `ledger_mcp::backup::Backups`.
 *Checked:* `ledger-mcp` `local.rs` (`format_upgrade_waits_for_consent`,
 `no_upgrade_unless_the_backup_is_proven`, `no_upgrade_without_a_backup`).

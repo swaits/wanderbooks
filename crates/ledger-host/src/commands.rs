@@ -1819,7 +1819,7 @@ const CONNECT_WAIT: Duration = Duration::from_secs(60);
 pub fn backed_up_lines(head_seq: u64, targets: &[admin::BackedUpTarget]) -> Vec<String> {
     if targets.is_empty() {
         return vec![
-            "No backups are set up: ask your agent to set the private repository and the backup folder.".into(),
+            "No backups are set up: choose a backup folder, in the window or with `wanderbooks books backup-setup ID --folder FOLDER`.".into(),
         ];
     }
     targets

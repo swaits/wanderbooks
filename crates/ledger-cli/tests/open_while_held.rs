@@ -2655,6 +2655,20 @@ fn the_commands_given_run_as_the_agents_own_token() {
     a.end();
 }
 
+/// A copy of a folder and everything in it.
+fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let target = to.join(e.file_name());
+        if e.path().is_dir() {
+            copy_folder(&e.path(), &target);
+        } else {
+            std::fs::copy(e.path(), target).unwrap();
+        }
+    }
+}
+
 #[test]
 fn a_backup_is_restored_from_the_command_line() {
     let home = Home::new("restore");
@@ -2683,7 +2697,7 @@ fn a_backup_is_restored_from_the_command_line() {
     );
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
     let head = s["head_seq"].as_u64().unwrap();
-    let backup = disk.join("acme.git");
+    let backup = disk.join("acme");
     let backup = backup.to_str().unwrap();
     // Previewed, and not done without a yes.
     let out = home.books(&["restore", backup, "--id", "copy"]);
@@ -2700,16 +2714,10 @@ fn a_backup_is_restored_from_the_command_line() {
         String::from_utf8_lossy(&out.stderr).contains("already books called"),
         "{out:?}"
     );
-    // A repository named otherwise: restored as the books it holds, by
-    // default (here: over those, refused), said.
-    let renamed = home.dir.path().join("disk").join("fernhill-backup.git");
-    let out = Command::new("git")
-        .args(["clone", "-q", "--bare"])
-        .arg(backup)
-        .arg(&renamed)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
+    // A folder named otherwise: restored as the books it holds, by default
+    // (here: over those, refused), said.
+    let renamed = home.dir.path().join("fernhill-backup");
+    copy_folder(&disk.join("acme"), &renamed);
     let out = home.books(&["restore", renamed.to_str().unwrap(), "--yes"]);
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("already books called \"acme\""),
@@ -2721,9 +2729,12 @@ fn a_backup_is_restored_from_the_command_line() {
         said.contains("It is a backup of the books \"acme\""),
         "{out:?}"
     );
-    assert!(said.contains("--id acme"), "{out:?}");
-    // A repository whose name is no id: still restored as its books.
-    let odd = home.dir.path().join("disk").join("Fernhill_Backup.git");
+    assert!(
+        said.contains("They were backed up as \"acme\"; they come back as \"other\""),
+        "{out:?}"
+    );
+    // A folder whose name is no id: still restored as its books.
+    let odd = home.dir.path().join("Fernhill_Backup");
     std::fs::rename(&renamed, &odd).unwrap();
     let out = home.books(&["restore", odd.to_str().unwrap(), "--yes"]);
     assert!(
@@ -2738,7 +2749,7 @@ fn a_backup_is_restored_from_the_command_line() {
         String::from_utf8_lossy(&out.stdout).contains("Restored as \"copy\""),
         "{out:?}"
     );
-    // Replacing them, the old kept: from the repository named otherwise,
+    // Replacing them, the old kept: from the folder named otherwise,
     // given no id (the books it holds are replaced).
     post_one(&mut a, 2).unwrap();
     let out = home.books(&["restore", renamed.to_str().unwrap(), "--replace", "--yes"]);
@@ -2914,9 +2925,9 @@ fn books_are_backed_up_now_from_the_command_line() {
         String::from_utf8_lossy(&out.stdout).contains("Backed up to the backup folder"),
         "{out:?}"
     );
-    assert!(disk.join("acme.git").join("HEAD").is_file());
+    assert!(disk.join("acme").join("manifests").is_dir());
     // A folder gone since: said, and --new-disk begins it again.
-    std::fs::rename(disk.join("acme.git"), home.dir.path().join("away.git")).unwrap();
+    std::fs::rename(disk.join("acme"), home.dir.path().join("away")).unwrap();
     let out = home.books(&["back-up", "acme"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(
@@ -2925,7 +2936,7 @@ fn books_are_backed_up_now_from_the_command_line() {
     );
     let out = home.books(&["back-up", "acme", "--new-disk"]);
     assert!(out.status.success(), "{out:?}");
-    assert!(disk.join("acme.git").join("HEAD").is_file());
+    assert!(disk.join("acme").join("manifests").is_dir());
     a.end();
 }
 

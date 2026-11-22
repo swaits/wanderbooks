@@ -67,12 +67,14 @@ mod io;
 mod read;
 mod seal;
 mod single;
+#[cfg(test)]
+mod tests;
 mod write;
 
 pub use cut::Cut;
 pub use read::list;
 pub use read::{Candidate, Found, Verified, drill, find, prove_local, verify_found};
-pub use seal::BackupKey;
+pub use seal::{BackupKey, key_derivations};
 pub use single::{FILE_EXTENSION, save_file};
 pub use write::{
     Destination, Options, Written, holds_only_sealed, set_name_for, write_destination,
@@ -223,7 +225,15 @@ pub struct Ctx {
     /// refuse to replace.
     no_links: bool,
     no_noreplace: bool,
+    /// Tests: nothing is synced to disk (a destination of thousands of
+    /// backups is made quickly; a real one never is).
+    no_sync: bool,
+    /// Tests: told each read and length look at a file of the set.
+    trace: Option<Trace>,
 }
+
+/// A test's look at which files of a set are read or measured.
+pub type Trace = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 impl std::fmt::Debug for Ctx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -265,6 +275,30 @@ impl Ctx {
         self.no_links = true;
         self.no_noreplace = true;
         self
+    }
+
+    /// Told, in tests, each `read` and `len` of a file of a set.
+    #[doc(hidden)]
+    pub fn with_trace(mut self, trace: Trace) -> Self {
+        self.trace = Some(trace);
+        self
+    }
+
+    pub(crate) fn traced(&self, kind: &str, rel: &str) {
+        if let Some(t) = &self.trace {
+            t(kind, rel);
+        }
+    }
+
+    /// Nothing is synced to disk (tests that make thousands of backups).
+    #[doc(hidden)]
+    pub fn with_no_sync(mut self) -> Self {
+        self.no_sync = true;
+        self
+    }
+
+    pub(crate) fn syncs(&self) -> bool {
+        !self.no_sync
     }
 
     pub(crate) fn refuses_links(&self) -> bool {

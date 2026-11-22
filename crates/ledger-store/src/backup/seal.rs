@@ -102,12 +102,23 @@ fn header_aad(kdf: &Kdf) -> Vec<u8> {
     .into_bytes()
 }
 
+/// How many keys this program has derived from a passphrase (tests: a
+/// folder of sealed sets costs one derivation per distinct setting).
+static DERIVATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many keys have been derived by this process.
+#[doc(hidden)]
+pub fn key_derivations() -> usize {
+    DERIVATIONS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 fn stretch(passphrase: &str, kdf: &Kdf) -> Result<Zeroizing<[u8; 32]>, BackupError> {
     if !kdf_in_bounds(kdf) {
         return Err(BackupError::Damaged(
             "its header asks for a key this program won't derive".into(),
         ));
     }
+    DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let salt = hex::decode(&kdf.salt).expect("checked");
     let params = Params::new(kdf.m, kdf.t, kdf.p, Some(32))
         .map_err(|_| BackupError::Damaged("its header's key settings are not valid".into()))?;

@@ -510,28 +510,27 @@ impl Set {
             ))),
         }
     }
+}
 
-    /// The index of stored files a manifest names.
-    pub(crate) fn index(&self, m: &Manifest) -> Result<Vec<IndexLine>, BackupError> {
-        let mut text = VecSink::default();
-        self.read_series(&m.files, Kind::Index, &mut text)?;
-        let mut out = Vec::new();
-        let mut seen = BTreeSet::new();
-        for line in text.bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-            let l: IndexLine = serde_json::from_slice(line).map_err(|_| {
-                BackupError::Damaged("the backup's index of stored files is damaged".into())
-            })?;
-            if !is_sha(&l.sha256) {
-                return Err(BackupError::Damaged(
-                    "the backup's index of stored files names a file by no hash".into(),
-                ));
-            }
-            if seen.insert(l.sha256.clone()) {
-                out.push(l);
-            }
+/// The index of stored files in `text` (one `{"sha256","bytes"}` per
+/// line), each file once.
+pub(crate) fn parse_index(text: &[u8]) -> Result<Vec<IndexLine>, BackupError> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in text.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let l: IndexLine = serde_json::from_slice(line).map_err(|_| {
+            BackupError::Damaged("the backup's index of stored files is damaged".into())
+        })?;
+        if !is_sha(&l.sha256) {
+            return Err(BackupError::Damaged(
+                "the backup's index of stored files names a file by no hash".into(),
+            ));
         }
-        Ok(out)
+        if seen.insert(l.sha256.clone()) {
+            out.push(l);
+        }
     }
+    Ok(out)
 }
 
 fn short(sha: &str) -> &str {
@@ -825,18 +824,9 @@ fn materialize(
     let mut index = BTreeSet::new();
     let mut lines = Vec::new();
     if index_damage.is_empty() {
-        for line in text.bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-            let l: IndexLine = serde_json::from_slice(line).map_err(|_| {
-                BackupError::Damaged("the backup's index of stored files is damaged".into())
-            })?;
-            if !is_sha(&l.sha256) {
-                return Err(BackupError::Damaged(
-                    "the backup's index of stored files names a file by no hash".into(),
-                ));
-            }
-            if index.insert(l.sha256.clone()) {
-                lines.push(l);
-            }
+        for l in parse_index(&text.bytes)? {
+            index.insert(l.sha256.clone());
+            lines.push(l);
         }
     }
     damaged.extend(index_damage);

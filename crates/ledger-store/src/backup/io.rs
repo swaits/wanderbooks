@@ -382,6 +382,7 @@ impl SetIo for DirSet {
     }
 
     fn len(&self, rel: &str) -> std::io::Result<Option<u64>> {
+        self.ctx.traced("len", rel);
         match std::fs::symlink_metadata(self.path(rel)) {
             // A link is not a file of a backup: it could lead anywhere.
             Ok(m) if m.is_file() && online_only(&m) => Err(carry(BackupError::NotDownloaded)),
@@ -403,6 +404,7 @@ impl SetIo for DirSet {
         rel: &str,
         f: &mut dyn FnMut(&mut dyn Read) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
+        self.ctx.traced("read", rel);
         let path = self.path(rel);
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(m) => m,
@@ -443,7 +445,11 @@ impl SetIo for DirSet {
                 fill(&mut w)?;
                 w.flush()?;
             }
-            file.sync_all()
+            if self.ctx.syncs() {
+                file.sync_all()
+            } else {
+                Ok(())
+            }
         })();
         if let Err(e) = written {
             // Something of ours that failed on its own: its scratch file
@@ -474,7 +480,9 @@ impl SetIo for DirSet {
                 return Err(e);
             }
         };
-        sync_dir(&parent);
+        if self.ctx.syncs() {
+            sync_dir(&parent);
+        }
         self.ctx.point("published", rel).map_err(carry)?;
         Ok(put)
     }

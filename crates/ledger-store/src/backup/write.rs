@@ -519,9 +519,12 @@ fn plan(
     cut: &Cut,
     distrust: &BTreeSet<String>,
     ctx: &Ctx,
-) -> Result<(Manifest, Vec<Plan>), BackupError> {
+) -> Result<(Manifest, Vec<Plan>, Vec<String>), BackupError> {
     let keys = set.keys.as_ref();
     let mut plans = Vec::new();
+    // Damaged pieces this plan comes upon without being asked to repair
+    // them (the segments of an index it can't read, which it begins again).
+    let mut noticed: Vec<String> = Vec::new();
     if let Some(p) = prev {
         if p.book != cut.book() {
             return Err(BackupError::Elsewhere);
@@ -570,18 +573,15 @@ fn plan(
     let mut restart = false;
     let known: Vec<IndexLine> = match prev {
         Some(p) => {
-            if p.files.segments.iter().any(|s| distrust.contains(&s.file)) {
+            let mut text = VecSinkText::default();
+            let damaged = set.read_series_lenient(&p.files, Kind::Index, &mut text)?;
+            let named_bad = p.files.segments.iter().any(|s| distrust.contains(&s.file));
+            if !damaged.is_empty() || named_bad {
                 restart = true;
+                noticed.extend(damaged.into_iter().map(|d| d.file));
                 Vec::new()
             } else {
-                match set.index(p) {
-                    Ok(k) => k,
-                    Err(BackupError::Damaged(_)) => {
-                        restart = true;
-                        Vec::new()
-                    }
-                    Err(e) => return Err(e),
-                }
+                super::read::parse_index(&text.0)?
             }
         }
         None => Vec::new(),
@@ -694,7 +694,7 @@ fn plan(
         depth: 0,
         sha: String::new(),
     };
-    Ok((manifest, plans))
+    Ok((manifest, plans, noticed))
 }
 
 /// Text gathered as a series is read.
@@ -715,7 +715,7 @@ impl Sink for VecSinkText {
 /// The manifest as it is kept: when `prev` (whole, as read) is a link in a
 /// chain that is not yet [`DELTA_CHAIN`] long, built on it, naming only
 /// what each series adds to its segments. Otherwise it names everything.
-fn kept_form(full: &Manifest, prev: Option<&Manifest>) -> Manifest {
+pub(crate) fn kept_form(full: &Manifest, prev: Option<&Manifest>) -> Manifest {
     let mut m = full.clone();
     let Some(p) = prev.filter(|p| p.depth + 1 < DELTA_CHAIN && !p.sha.is_empty()) else {
         return m;
@@ -825,10 +825,11 @@ fn prove_and_repair(
     cut: &Cut,
     mut number: u64,
     mut added: BTreeSet<String>,
+    noticed: Vec<String>,
     ctx: &Ctx,
 ) -> Result<Written, BackupError> {
     let mut distrust: BTreeSet<String> = BTreeSet::new();
-    let mut repaired: Vec<String> = Vec::new();
+    let mut repaired: Vec<String> = noticed;
     for round in 0..=REPAIR_ROUNDS {
         ctx.phase("proof");
         ctx.check("proving the backup")?;
@@ -855,7 +856,7 @@ fn prove_and_repair(
         // them (the stored files are found by their hash and generation).
         ctx.phase("repair");
         let prev = set.manifest(number)?;
-        let (mut manifest, plans) = plan(set, Some(&prev), cut, &distrust, ctx)?;
+        let (mut manifest, plans, _) = plan(set, Some(&prev), cut, &distrust, ctx)?;
         added = BTreeSet::new();
         for p in &plans {
             ctx.check("backing up")?;
@@ -898,7 +899,7 @@ pub(crate) fn write_into_set(
         let prev = set.newest_whole()?.map(|(m, _)| m);
         let next = numbers.last().map_or(1, |n| n + 1);
         ctx.phase("plan");
-        let (mut manifest, plans) = plan(set, prev.as_ref(), cut, &BTreeSet::new(), ctx)?;
+        let (mut manifest, plans, noticed) = plan(set, prev.as_ref(), cut, &BTreeSet::new(), ctx)?;
         if let Some(p) = &prev
             && manifest.same_content(p)
         {
@@ -921,13 +922,15 @@ pub(crate) fn write_into_set(
             }
         }
         match put_manifest(set, &mut manifest, prev.as_ref(), next, ctx)? {
-            Some(number) if prove => return prove_and_repair(set, cut, number, added, ctx),
+            Some(number) if prove => {
+                return prove_and_repair(set, cut, number, added, noticed, ctx);
+            }
             Some(number) => {
                 return Ok(Written {
                     number,
                     head: cut.head().clone(),
                     new: true,
-                    repaired: Vec::new(),
+                    repaired: noticed,
                     files_proven: 0,
                 });
             }

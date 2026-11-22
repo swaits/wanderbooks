@@ -750,6 +750,11 @@ fn books_usage(prog: &str) {
     );
     eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
     eprintln!("       {prog} back-up ID [--new-disk]");
+    eprintln!("       {prog} backup-status ID");
+    eprintln!(
+        "       {prog} backup-setup ID [--folder FOLDER] [--passphrase | --remove-passphrase]"
+    );
+    eprintln!("       {prog} backup-save ID FILE");
     eprintln!("       {prog} upgrade ID");
     eprintln!("       {prog} extract BOOK ATTACHMENT");
     eprintln!("       {prog} open ID");
@@ -801,6 +806,9 @@ pub fn books(
     let mut yes = false;
     let mut replace = false;
     let mut new_disk = false;
+    let mut folder: Option<String> = None;
+    let mut ask_passphrase = false;
+    let mut remove_passphrase = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if common.take(&arg, &mut args)? {
@@ -808,6 +816,9 @@ pub fn books(
         }
         let mut value = |what: &str| args.next().ok_or_else(|| format!("{arg} needs {what}"));
         match arg.as_str() {
+            "--folder" => folder = Some(value("a folder")?),
+            "--passphrase" => ask_passphrase = true,
+            "--remove-passphrase" => remove_passphrase = true,
             "--currency" => currency = value("a currency code")?,
             "--id" => id = Some(value("an id")?),
             "--toml" => toml = Some(PathBuf::from(value("a file")?)),
@@ -916,6 +927,61 @@ pub fn books(
                 id: (*book).to_string(),
             },
         ),
+        ["backup-status", book] => {
+            return match backup_status(&common, book) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    Err(exit(1))
+                }
+            };
+        }
+        ["backup-setup", book] => {
+            // A passphrase is typed by a person, at a terminal, twice and
+            // unechoed: never on the command line, where a shell keeps it.
+            let passphrase = if ask_passphrase {
+                match ask_backup_passphrase() {
+                    Ok(p) => Some(p),
+                    Err(why) => {
+                        eprintln!("error: {why}");
+                        return Err(exit(1));
+                    }
+                }
+            } else {
+                None
+            };
+            return match backup_setup(&common, book, folder, passphrase, remove_passphrase) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    Err(exit(1))
+                }
+            };
+        }
+        ["backup-save", book, file] => {
+            return match backup_save(&common, book, file) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    Err(exit(1))
+                }
+            };
+        }
         ["back-up", book] => {
             return match back_up_now(&common, book, new_disk) {
                 Ok(lines) => {
@@ -1175,6 +1241,142 @@ pub fn back_up_now(common: &Common, book: &str, new_disk: bool) -> Result<Vec<St
                 Ok(lines)
             }
         }
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// Ask at the terminal for the passphrase that protects the backups: twice,
+/// unechoed, with the warning that a forgotten one cannot be recovered.
+fn ask_backup_passphrase() -> Result<String, String> {
+    if !at_a_terminal() {
+        return Err(
+            "the backup passphrase is typed by a person, at a terminal (or set up in the window)"
+                .into(),
+        );
+    }
+    println!(
+        "Backups protected by a passphrase are sealed: only this passphrase opens them. A forgotten passphrase cannot be recovered by anyone."
+    );
+    let first = rpassword::prompt_password("Backup passphrase: ").map_err(|e| e.to_string())?;
+    let again = rpassword::prompt_password("Again: ").map_err(|e| e.to_string())?;
+    if first != again {
+        return Err("the two passphrases differ: nothing was changed".into());
+    }
+    Ok(first)
+}
+
+/// How the books' backups stand, as the server says it.
+pub fn backup_standing(common: &Common, book: &str) -> Result<admin::BackupStanding, String> {
+    match with_server(
+        common,
+        Request::BackupStatus {
+            id: book.to_string(),
+        },
+    )? {
+        Response::BackupStatus(s) => Ok(s),
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// How the books' backups stand, in words, a line each.
+pub fn backup_status(common: &Common, book: &str) -> Result<Vec<String>, String> {
+    backup_standing(common, book).map(|s| backup_words(&s))
+}
+
+/// The words for a backup standing, as an ordinary person reads them.
+pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
+    let mut lines = Vec::new();
+    match &s.folder {
+        None => lines.push("Not backed up: no backup folder is chosen yet.".to_string()),
+        Some(folder) => {
+            lines.push(format!("Backing up to {folder}."));
+            if s.disconnected {
+                lines.push("The disk with the backup is not connected: connect it, and the next backup goes there. If it is a new disk, say so when you back up now.".into());
+            } else if let Some(why) = &s.last_error {
+                lines.push(format!("The last backup didn't work: {why}"));
+            }
+            match (&s.last_ok_at, s.through_seq) {
+                (Some(at), Some(seq)) => lines.push(format!(
+                    "Last backed up {at}, through event {seq} of {}.{}",
+                    s.head_seq,
+                    if s.through_seq == Some(s.head_seq) {
+                        " Up to date."
+                    } else if s.stale {
+                        " More than a day behind."
+                    } else {
+                        " Behind, and catching up."
+                    }
+                )),
+                _ => lines.push("No backup has been made there yet.".into()),
+            }
+            match (&s.last_drill_at, &s.drill_error) {
+                (_, Some(why)) => lines.push(format!(
+                    "The weekly check that the backup can be restored failed: {why}"
+                )),
+                (Some(at), None) => lines.push(format!("Proven restorable {at} (checked weekly).")),
+                (None, None) if s.through_seq.is_some() => {
+                    lines.push("Not yet proven restorable: it is checked weekly.".into())
+                }
+                _ => {}
+            }
+            lines.push(if s.sealed {
+                "Protected by a passphrase. A forgotten passphrase cannot be recovered.".into()
+            } else {
+                "Not protected by a passphrase.".into()
+            });
+        }
+    }
+    if let Some(note) = &s.note {
+        lines.push(note.clone());
+    }
+    lines
+}
+
+/// Set up the books' backups: the folder, and the passphrase (D-92).
+pub fn backup_setup(
+    common: &Common,
+    book: &str,
+    folder: Option<String>,
+    passphrase: Option<String>,
+    remove_passphrase: bool,
+) -> Result<Vec<String>, String> {
+    let folder = folder.map(|f| {
+        std::path::absolute(&f)
+            .unwrap_or_else(|_| PathBuf::from(&f))
+            .display()
+            .to_string()
+    });
+    match with_server(
+        common,
+        Request::BackupSetup {
+            id: book.to_string(),
+            folder,
+            passphrase: passphrase.map(ledger_mcp::admin::Passphrase),
+            remove_passphrase,
+        },
+    )? {
+        Response::Said { lines } => Ok(lines),
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// Save a backup of the books as one file.
+pub fn backup_save(common: &Common, book: &str, file: &str) -> Result<Vec<String>, String> {
+    let file = std::path::absolute(file)
+        .unwrap_or_else(|_| PathBuf::from(file))
+        .display()
+        .to_string();
+    match with_server(
+        common,
+        Request::BackupSave {
+            id: book.to_string(),
+            path: file,
+        },
+    )? {
+        Response::Said { lines } => Ok(lines),
         Response::Refused(why) => Err(why),
         other => Err(format!("the books server answered oddly: {other:?}")),
     }

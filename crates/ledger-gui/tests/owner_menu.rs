@@ -68,6 +68,34 @@ impl Owner for Fake {
         ));
         Ok(vec![format!("Restored as \"{}\".", plan.id)])
     }
+    fn backup_state(&self, book: &str) -> Result<ledger_gui::owner::BackupState, String> {
+        self.said(format!("state {book}"));
+        Ok(ledger_gui::owner::BackupState {
+            lines: vec![
+                "Not backed up: no backup folder is chosen yet.".into(),
+                "Not protected by a passphrase.".into(),
+            ],
+            folder: None,
+            sealed: false,
+        })
+    }
+    fn set_up_backups(
+        &self,
+        book: &str,
+        folder: Option<String>,
+        passphrase: Option<ledger_gui::owner::Secret>,
+        remove: bool,
+    ) -> Result<Vec<String>, String> {
+        self.said(format!(
+            "set up {book} {folder:?} {} {remove}",
+            if passphrase.is_some() {
+                "sealed"
+            } else {
+                "plain"
+            }
+        ));
+        Ok(vec!["The backup folder is chosen.".into()])
+    }
     fn connect(&self, agent: Agent, book: &str) -> Result<Vec<String>, String> {
         self.said(format!("connect {agent:?} {book}"));
         Ok(vec!["Claude Code reaches the books.".into()])
@@ -399,4 +427,68 @@ fn screenshots() {
     settle(&mut h, &f, n + 1);
     shot(&mut h, "restore-plan");
     h.get_by_label("Cancel").click();
+}
+
+/// The Backups window (D-91, D-92): how they stand in words, the folder, a
+/// passphrase offered and off unless asked for, with its warning that a
+/// forgotten one cannot be recovered; the owner is asked to set up only for
+/// a folder, or a passphrase of 12 characters typed twice the same.
+#[test]
+fn the_backups_window_says_how_they_stand_and_offers_a_passphrase_plainly() {
+    let _alone = alone();
+    let f = fake();
+    let (_dir, _book, b) = books(true);
+    let mut h = harness(b);
+    let start = f.asked.lock().unwrap().len();
+    let page_fields = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .count();
+    open_menu(&mut h);
+    h.get_by_label_contains("Backups…").click();
+    settle(&mut h, &f, start + 1);
+    assert_eq!(f.asked.lock().unwrap()[start], "state acme");
+    assert!(
+        h.query_by_label_contains("no backup folder is chosen yet")
+            .is_some()
+    );
+    // The passphrase is off, and its offer says what it means only when
+    // asked for.
+    assert!(h.query_by_label_contains("cannot be recovered").is_none());
+    h.get_by_label_contains("Protect the backups with a passphrase")
+        .click();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("cannot be recovered").is_some());
+    assert!(h.query_by_label_contains("git").is_none());
+    // Nothing is done without a folder or a good passphrase.
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .nth(page_fields)
+        .unwrap()
+        .focus();
+    h.run_steps(2);
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .nth(page_fields)
+        .unwrap()
+        .type_text("/media/disk");
+    h.run_steps(2);
+    for (n, text) in [
+        (0usize, "correct horse battery"),
+        (1, "correct horse battery"),
+    ] {
+        h.get_all_by_role(egui::accesskit::Role::PasswordInput)
+            .nth(n)
+            .unwrap()
+            .focus();
+        h.run_steps(2);
+        h.get_all_by_role(egui::accesskit::Role::PasswordInput)
+            .nth(n)
+            .unwrap()
+            .type_text(text);
+        h.run_steps(2);
+    }
+    h.get_by_label("Save these choices").click();
+    settle(&mut h, &f, start + 2);
+    assert_eq!(
+        f.asked.lock().unwrap()[start + 1],
+        "set up acme Some(\"/media/disk\") sealed false"
+    );
 }

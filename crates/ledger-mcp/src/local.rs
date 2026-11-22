@@ -1656,6 +1656,53 @@ impl Books {
                     Err(why) => Response::Refused(self.hide(why)),
                 }
             }
+            Request::BackupSetup {
+                id,
+                folder,
+                passphrase,
+                remove_passphrase,
+            } => match self.backups_of(&id) {
+                Ok(backups) => {
+                    let rt = tokio::runtime::Handle::current();
+                    let pass = passphrase.as_ref().map(|p| p.0.clone());
+                    match rt.block_on(backups.set_up(folder, pass, remove_passphrase)) {
+                        Ok(lines) => Response::Said { lines },
+                        Err(why) => Response::Refused(self.hide(why)),
+                    }
+                }
+                Err(r) => r,
+            },
+            Request::BackupStatus { id } => match self.backups_of(&id) {
+                Ok(backups) => {
+                    let rt = tokio::runtime::Handle::current();
+                    let s = rt.block_on(backups.window_standing());
+                    let t = s.status.targets.first();
+                    Response::BackupStatus(admin::BackupStanding {
+                        head_seq: s.status.head_seq,
+                        folder: s.folder,
+                        sealed: s.sealed,
+                        last_ok_at: t.and_then(|t| t.last_ok_at.clone()),
+                        through_seq: t.and_then(|t| t.through_seq),
+                        stale: t.is_some_and(|t| t.stale),
+                        last_error: t.and_then(|t| t.last_error.clone()),
+                        last_drill_at: t.and_then(|t| t.last_drill_at.clone()),
+                        drill_error: t.and_then(|t| t.drill_error.clone()),
+                        disconnected: t.is_some_and(|t| t.disconnected),
+                        note: s.status.note,
+                    })
+                }
+                Err(r) => r,
+            },
+            Request::BackupSave { id, path } => match self.backups_of(&id) {
+                Ok(backups) => {
+                    let rt = tokio::runtime::Handle::current();
+                    match rt.block_on(backups.save_file(&path)) {
+                        Ok(lines) => Response::Said { lines },
+                        Err(why) => Response::Refused(self.hide(why)),
+                    }
+                }
+                Err(r) => r,
+            },
             Request::Adopt {
                 id,
                 source,
@@ -2178,6 +2225,22 @@ impl Books {
                 })
                 .collect(),
         )
+    }
+
+    /// The backups of the open book `id`, or the refusal to give a request
+    /// that needs them.
+    fn backups_of(&self, id: &str) -> Result<Arc<crate::backup::Backups>, Response> {
+        let refused = |text: String| Response::Refused(self.hide(text));
+        let id = BookId::parse(id).map_err(|e| refused(e.to_string()))?;
+        match self.held().get(id.as_str()) {
+            Some(Book::Open { backups, .. }) => Ok(backups.clone()),
+            Some(Book::Failed(why)) => Err(refused(format!("those books didn't open: {why}"))),
+            Some(Book::Closed) => Err(refused(self.not_open(&id))),
+            None => Err(refused(format!(
+                "there are no books called {:?}",
+                id.as_str()
+            ))),
+        }
     }
 
     /// What is said of a book that exists but isn't open, to an admin

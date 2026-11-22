@@ -147,6 +147,35 @@ pub enum Request {
         #[serde(default)]
         new_disk: bool,
     },
+    /// Set up a book's backups (D-91, D-92): the folder, and the
+    /// passphrase.
+    BackupSetup {
+        /// The books.
+        id: String,
+        /// The backup folder, by its whole path: set as the books'
+        /// `backup.folder`, the owner the one who decided.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+        /// Protect the backups with this passphrase (never shown, never
+        /// kept: the key it makes is kept on this computer).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passphrase: Option<Passphrase>,
+        /// Take the passphrase off.
+        #[serde(default)]
+        remove_passphrase: bool,
+    },
+    /// How a book's backups stand.
+    BackupStatus {
+        /// The books.
+        id: String,
+    },
+    /// Save a backup of a book as one file.
+    BackupSave {
+        /// The books.
+        id: String,
+        /// The file, by its whole path (.wbbackup is added if missing).
+        path: String,
+    },
     /// Make a token for an agent (plan 3.3).
     TokenCreate {
         /// The books it opens.
@@ -709,6 +738,40 @@ pub struct BackedUpTarget {
     pub problem: Option<String>,
 }
 
+/// How a book's backups stand, for the window and the command line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupStanding {
+    /// The books' head seq now.
+    pub head_seq: u64,
+    /// The backup folder chosen, if one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// Protected by a passphrase.
+    pub sealed: bool,
+    /// When it last took the books (UTC), if ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ok_at: Option<String>,
+    /// The journal seq it holds, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_seq: Option<u64>,
+    /// More than a day behind.
+    pub stale: bool,
+    /// Why its last backup failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// When it was last proven restorable (UTC), if ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_drill_at: Option<String>,
+    /// Why that check failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drill_error: Option<String>,
+    /// Its disk isn't connected.
+    pub disconnected: bool,
+    /// What to know or do: none set up, an older kind no longer used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 /// The server's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -739,6 +802,13 @@ pub enum Response {
         /// Each target.
         targets: Vec<BackedUpTarget>,
     },
+    /// What was done, in words (a backup set up or saved).
+    Said {
+        /// A line each.
+        lines: Vec<String>,
+    },
+    /// How a book's backups stand.
+    BackupStatus(BackupStanding),
     /// A token made: its text, shown this once (INVARIANT 6).
     TokenCreated {
         /// The token.
@@ -857,7 +927,11 @@ pub fn call_within(
         | Request::Sessions
         | Request::RemoteStatus
         | Request::RemotePending
+        | Request::BackupStatus { .. }
         | Request::RemoteApprovals { .. } => None,
+        Request::BackupSetup { .. } | Request::BackupSave { .. } => {
+            Some("`wanderbooks books backup-status BOOK` says how the backups stand")
+        }
         Request::RemoteStart { .. }
         | Request::RemoteStop
         | Request::RemoteAllow { .. }

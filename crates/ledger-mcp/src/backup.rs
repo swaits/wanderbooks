@@ -922,6 +922,192 @@ impl Backups {
     }
 }
 
+/// What the window shows of a book's backups: the status, the folder the
+/// person chose (their own path, never one of the data root's), and whether
+/// the backups are protected by a passphrase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standing {
+    /// How the folder stands.
+    pub status: Status,
+    /// The backup folder, if one is chosen.
+    pub folder: Option<String>,
+    /// Protected by a passphrase now.
+    pub sealed: bool,
+}
+
+impl Backups {
+    /// What the window shows (read under the store's lock).
+    pub async fn window_standing(&self) -> Standing {
+        let store = self.store.clone();
+        let (book, dir) = (self.book.clone(), self.dir.clone());
+        let found = tokio::task::spawn_blocking(move || {
+            store
+                .with_store(|s| Standing {
+                    status: standing(s, &book, &dir),
+                    folder: s.ledger().settings().backup_folder().map(str::to_string),
+                    sealed: matches!(BackupKey::load(&dir), Ok(Some(_))),
+                })
+                .ok()
+        })
+        .await
+        .ok()
+        .flatten();
+        found.unwrap_or_else(|| Standing {
+            status: standing_of(&[], &[], 0, chrono::Utc::now(), None),
+            folder: None,
+            sealed: false,
+        })
+    }
+
+    /// Set up the backups (D-91, D-92), as the owner does it in the window:
+    /// the folder (`folder`, journaled as the books' `backup.folder` setting,
+    /// the owner the one who decided), and the passphrase (`passphrase`
+    /// makes a new key, kept on this computer only: backups from the next on
+    /// are sealed, in a set of their own beside any earlier one, which is
+    /// untouched; `remove_passphrase` forgets the key: the next backup is
+    /// plain). What was done, in words.
+    pub async fn set_up(
+        &self,
+        folder: Option<String>,
+        passphrase: Option<String>,
+        remove_passphrase: bool,
+    ) -> Result<Vec<String>, String> {
+        let _one = self.running.lock().await;
+        if self.is_shut() {
+            return Err(SHUT.to_string());
+        }
+        let step = self.begin()?;
+        let (store, dir) = (self.store.clone(), self.dir.clone());
+        let done = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+            let _step = step;
+            let mut lines = Vec::new();
+            if let Some(folder) = folder.filter(|f| !f.trim().is_empty()) {
+                let path = PathBuf::from(folder.trim());
+                if !path.is_absolute() {
+                    return Err("the backup folder is named by its whole path".into());
+                }
+                if !path.is_dir() {
+                    return Err("that folder isn't there: choose a folder that exists".into());
+                }
+                if ledger_store::root::inside_a_root(&path) {
+                    return Err(format!(
+                        "that folder is inside {}: choose a folder somewhere else, on another disk if you can",
+                        ledger_store::root::THE_ROOT
+                    ));
+                }
+                let change = ledger_core::settings::Change {
+                    key: "backup.folder".into(),
+                    value: Some(Value::String(path.display().to_string())),
+                };
+                let source = ledger_core::settings::Source {
+                    decided_by: "the owner, in the window".into(),
+                    decided_on: chrono::Utc::now().date_naive(),
+                    citation: None,
+                    note: Some("The backup folder.".into()),
+                };
+                let made = store
+                    .with_store_mut(|s| s.change_settings(&[change], &source))
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                lines.push(if made.is_empty() {
+                    "The backup folder is the one chosen already.".to_string()
+                } else {
+                    "The backup folder is chosen: the books back themselves up there a little after each change, when they open and before they close.".to_string()
+                });
+            }
+            if remove_passphrase && passphrase.is_some() {
+                return Err("choose a passphrase or remove it, not both".into());
+            }
+            if let Some(p) = passphrase {
+                let key = BackupKey::generate(&p).map_err(|e| e.to_string())?;
+                key.store(&dir).map_err(|e| hide(&e.to_string(), &dir))?;
+                lines.push("Backups are now protected by the passphrase: from the next backup on, every file in the backup folder is sealed. Backups made before stay as they were, unprotected, and are never deleted: delete their folder yourself if you want them gone. A forgotten passphrase cannot be recovered by anyone.".to_string());
+            } else if remove_passphrase {
+                BackupKey::forget(&dir).map_err(|e| hide(&e.to_string(), &dir))?;
+                lines.push("The passphrase is taken off: from the next backup on, files are written without protection. Backups sealed before stay sealed with the passphrase they were made with.".to_string());
+            }
+            if lines.is_empty() {
+                lines.push("Nothing was changed.".to_string());
+            }
+            Ok(lines)
+        })
+        .await
+        .unwrap_or_else(|_| Err("the set-up stopped".into()));
+        if let Ok(lines) = &done {
+            self.record(json!({"kind": "setup", "lines": lines.len()}));
+        }
+        done
+    }
+
+    /// Save a backup as one file at `path` ("Save a backup..."): the same
+    /// contents as the backup folder's, sealed when the backups are.
+    pub async fn save_file(&self, path: &str) -> Result<Vec<String>, String> {
+        let _one = self.running.lock().await;
+        if self.is_shut() {
+            return Err(SHUT.to_string());
+        }
+        if self.hurried() {
+            return Err(self.stopped_words());
+        }
+        let mut file = PathBuf::from(path.trim());
+        if !file.is_absolute() {
+            return Err("the file is named by its whole path".into());
+        }
+        if file.extension().is_none_or(|e| e != backup::FILE_EXTENSION) {
+            let mut name = file.file_name().unwrap_or_default().to_os_string();
+            name.push(format!(".{}", backup::FILE_EXTENSION));
+            file.set_file_name(name);
+        }
+        if file.parent().is_none_or(|p| !p.is_dir()) {
+            return Err("the folder to save it in isn't there".into());
+        }
+        if ledger_store::root::inside_a_root(&file) {
+            return Err(format!(
+                "that is inside {}: save it somewhere else",
+                ledger_store::root::THE_ROOT
+            ));
+        }
+        let step = self.begin()?;
+        let (store, dir, book) = (self.store.clone(), self.dir.clone(), self.book.clone());
+        let ctx = self.ctx_for("asked");
+        let sealed_to = file.clone();
+        let saved = tokio::task::spawn_blocking(move || {
+            let _step = step;
+            let key = BackupKey::load(&dir).map_err(|e| e.to_string())?;
+            let cut = store
+                .with_store(|s| Cut::take(&book, &dir, s.head()))
+                .map_err(|e| e)?
+                .map_err(|e| e.to_string())?;
+            backup::save_file(&sealed_to, &cut, key.as_ref(), &ctx)
+                .map(|w| (w, key.is_some()))
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|_| Err("the backup stopped".into()));
+        match saved {
+            Ok((w, sealed)) => {
+                self.record(json!({"kind": "saved", "ok": true, "sealed": sealed,
+                    "head": {"seq": w.head.0, "hash": w.head.1}}));
+                Ok(vec![format!(
+                    "Saved a backup of the books through event {} as {}{}.",
+                    w.head.0,
+                    file.display(),
+                    if sealed {
+                        ", protected by the passphrase"
+                    } else {
+                        ""
+                    }
+                )])
+            }
+            Err(why) => {
+                let why = hide(&why, &self.dir);
+                self.record(json!({"kind": "saved", "ok": false, "error": why}));
+                Err(why)
+            }
+        }
+    }
+}
+
 /// The old backup history's folder in a book's folder: left alone.
 const OLD_ARCHIVE_DIR: &str = "archive.git";
 

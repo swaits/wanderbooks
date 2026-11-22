@@ -1351,3 +1351,154 @@ async fn a_clone_of_an_old_git_backup_is_adopted_as_a_plain_folder() {
     assert!(server.close().success());
     let _ = folder;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_passphrase_seals_the_backups_and_a_restore_asks_for_it() {
+    // D-92 from the window's side: set up through the admin socket, a backup
+    // made sealed, the status said, a restore on another computer asking for
+    // the passphrase, a wrong one refused, a saved file sealed too, and the
+    // passphrase taken off.
+    const PASS: &str = "correct horse battery staple";
+    let home = Home::new("sealed");
+    let server = Server::start(&home, Duration::from_secs(3600));
+    home.create("acme");
+    let folder = home.outside("disk");
+    std::fs::create_dir_all(&folder).unwrap();
+    let said = |r: Response| match r {
+        Response::Said { lines } => lines.join(" "),
+        other => panic!("{other:?}"),
+    };
+    // A folder that isn't there, or is inside the books, is refused in words.
+    match home.admin(Request::BackupSetup {
+        id: "acme".into(),
+        folder: Some(home.outside("nowhere").display().to_string()),
+        passphrase: None,
+        remove_passphrase: false,
+    }) {
+        Response::Refused(why) => assert!(why.contains("isn't there"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    let words = said(home.admin(Request::BackupSetup {
+        id: "acme".into(),
+        folder: Some(folder.display().to_string()),
+        passphrase: Some(admin::Passphrase(PASS.into())),
+        remove_passphrase: false,
+    }));
+    assert!(words.contains("cannot be recovered"), "{words}");
+    assert!(!words.contains(PASS));
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    post_one(&c, 3).await;
+    let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
+    assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
+    assert_eq!(s["targets"][0]["sealed"], true, "{s}");
+    match home.admin(Request::BackupStatus { id: "acme".into() }) {
+        Response::BackupStatus(st) => {
+            assert!(st.sealed && st.last_ok_at.is_some(), "{st:?}");
+            assert_eq!(
+                st.folder.as_deref(),
+                Some(folder.display().to_string().as_str())
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // What is in the folder says nothing of the books.
+    let names: Vec<String> = files_below(&folder, "")
+        .into_iter()
+        .map(|p| {
+            p.strip_prefix(&folder)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.contains("acme") || n.contains("journal")),
+        "{names:?}"
+    );
+    // Nothing of the passphrase or its key is in the backup record, the
+    // access log or the journal.
+    let book = home.book_dir("acme");
+    for file in ["ops/backup.jsonl", "access.jsonl", "journal.jsonl"] {
+        let text = std::fs::read_to_string(book.join(file)).unwrap_or_default();
+        assert!(!text.contains(PASS), "{file}");
+    }
+    let key = std::fs::read_to_string(book.join("local").join("backup-key.json")).unwrap();
+    let master = key
+        .split('"')
+        .nth(key.split('"').position(|p| p == "master").unwrap() + 2)
+        .unwrap()
+        .to_string();
+    for file in ["ops/backup.jsonl", "access.jsonl", "journal.jsonl"] {
+        let text = std::fs::read_to_string(book.join(file)).unwrap_or_default();
+        assert!(!text.contains(&master), "{file}");
+    }
+    drop(c);
+    assert!(server.close().success());
+    // Another computer: the passphrase is asked for, and a wrong one refused.
+    let other = Home::new("sealed-new");
+    let server = Server::start(&other, Duration::from_secs(3600));
+    let why = restore(&other, "acme", &folder, false).unwrap_err();
+    assert!(why.contains("passphrase"), "{why}");
+    let why = restore_with(
+        &other,
+        "acme",
+        &folder,
+        false,
+        Some("not the right words at all"),
+    )
+    .unwrap_err();
+    assert!(why.contains("isn't the passphrase"), "{why}");
+    assert_eq!(books_held(&other), Vec::<String>::new());
+    let r = restore_with(&other, "acme", &folder, false, Some(PASS)).unwrap();
+    assert_eq!(r.head, live_head(&home, "acme"));
+    // The restored books keep backing up sealed, with no question asked.
+    assert!(
+        other
+            .book_dir("acme")
+            .join("local")
+            .join("backup-key.json")
+            .is_file()
+    );
+    // Saved as one file: sealed too, and restorable from.
+    let file = other.outside("acme.wbbackup");
+    let words = said(other.admin(Request::BackupSave {
+        id: "acme".into(),
+        path: file.display().to_string(),
+    }));
+    assert!(words.contains("protected by the passphrase"), "{words}");
+    assert!(server.close().success());
+    let third = Home::new("sealed-file");
+    let server = Server::start(&third, Duration::from_secs(3600));
+    assert!(restore(&third, "acme", &file, false).is_err());
+    let r = restore_with(&third, "acme", &file, false, Some(PASS)).unwrap();
+    assert_eq!(r.head, live_head(&home, "acme"));
+    assert!(server.close().success());
+    // The passphrase taken off: the next backup is plain, in the old plain
+    // folder, and the sealed one is untouched.
+    let server = Server::start(&home, Duration::from_secs(3600));
+    let sealed_before: Vec<_> = files_below(&folder, "sealed-");
+    let bytes_before: Vec<Vec<u8>> = sealed_before
+        .iter()
+        .map(|p| std::fs::read(p).unwrap())
+        .collect();
+    said(home.admin(Request::BackupSetup {
+        id: "acme".into(),
+        folder: None,
+        passphrase: None,
+        remove_passphrase: true,
+    }));
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
+    assert_eq!(s["targets"][0]["sealed"], false, "{s}");
+    assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
+    assert!(folder.join("acme").join("manifests").is_dir());
+    let bytes_after: Vec<Vec<u8>> = sealed_before
+        .iter()
+        .map(|p| std::fs::read(p).unwrap())
+        .collect();
+    assert_eq!(bytes_before, bytes_after);
+    drop(c);
+    assert!(server.close().success());
+}

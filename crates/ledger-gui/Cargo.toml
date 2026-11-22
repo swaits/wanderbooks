@@ -37,6 +37,10 @@ rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zeroize = "1"
+# The system's own folder and file dialogs for "Back up to..." and "Save a
+# backup...": the portal on Linux, the native ones on Windows and macOS. The
+# window shows nothing but what the system's dialog gives back, a path.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # The dock: a terminal emulator over a PTY (ConPTY on Windows), P11b
 alacritty_terminal = "0.26"
 

@@ -147,6 +147,18 @@ impl Drop for Secret {
     }
 }
 
+/// How the books' backups stand, in words, for the Backups window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupState {
+    /// What to tell the person, a line each (when it last backed up, whether
+    /// it was proven restorable, a disk that isn't connected).
+    pub lines: Vec<String>,
+    /// The backup folder chosen, if one is.
+    pub folder: Option<String>,
+    /// Protected by a passphrase.
+    pub sealed: bool,
+}
+
 /// A restore previewed: what it would do, and what it is of (INVARIANT 3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestorePlan {
@@ -453,6 +465,25 @@ pub trait Owner: Send + Sync {
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String>;
     /// Back the books `book` up now.
     fn back_up_now(&self, book: &str) -> Result<Vec<String>, String>;
+    /// How the books `book`'s backups stand. Blocks.
+    fn backup_state(&self, _book: &str) -> Result<BackupState, String> {
+        Err("not here".into())
+    }
+    /// Set the books' backups up: the backup folder, and the passphrase
+    /// (set, or taken off). What was done, a line each. Blocks.
+    fn set_up_backups(
+        &self,
+        _book: &str,
+        _folder: Option<String>,
+        _passphrase: Option<Secret>,
+        _remove_passphrase: bool,
+    ) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
+    /// Save a backup of the books as one file at `file`. Blocks.
+    fn save_backup(&self, _book: &str, _file: &str) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
     /// Preview restoring the backup at `source` (as `id`, else its own
     /// books' id), replacing the books of that id or not.
     fn plan_restore(
@@ -594,11 +625,59 @@ enum Dialog {
     None,
     /// "New books…": their id and currency.
     NewBooks { id: String, currency: String },
+    /// "Backups…": the folder, the passphrase, and how they stand.
+    Backups(Box<BackupForm>),
     /// "Restore…": the backup, then its preview.
     Restore(Box<RestoreForm>),
     /// The format upgrade: the go-ahead, with the owner passphrase.
     Upgrade(Box<UpgradeForm>),
 }
+
+/// The Backups window: how they stand, the folder to choose, the passphrase
+/// to offer.
+struct BackupForm {
+    /// What the server said of them, once it has.
+    state: Option<Result<BackupState, String>>,
+    /// The reading under way.
+    loading: Option<Receiver<Result<BackupState, String>>>,
+    /// The folder, as typed or chosen.
+    folder: String,
+    /// Whether a passphrase is being set (or changed).
+    protect: bool,
+    /// The passphrase, twice (wiped when the form is dropped).
+    pass: String,
+    again: String,
+    /// Why the last try was refused, or what it did.
+    problem: Option<String>,
+    said: Vec<String>,
+}
+
+impl BackupForm {
+    fn new() -> Self {
+        Self {
+            state: None,
+            loading: None,
+            folder: String::new(),
+            protect: false,
+            pass: String::new(),
+            again: String::new(),
+            problem: None,
+            said: Vec::new(),
+        }
+    }
+}
+
+impl Drop for BackupForm {
+    /// What was typed and not handed over is wiped from memory.
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.pass);
+        zeroize::Zeroize::zeroize(&mut self.again);
+    }
+}
+
+/// The words a person is told when setting a passphrase: what it does, and
+/// that it cannot be recovered (D-92).
+pub const PASSPHRASE_WARNING: &str = "Every file in the backup folder is sealed: only this passphrase opens it, and the files say nothing about your books but how many and how big. Your computer keeps the key so backups stay automatic. A forgotten passphrase cannot be recovered, by anyone, and backups made without it before this stay as they were. Write it down somewhere safe.";
 
 /// The format upgrade's dialog (INVARIANT 5).
 struct UpgradeForm {
@@ -937,7 +1016,7 @@ impl OwnerMenu {
                     ui.set_min_width(240.0);
                     if ui
                         .button(format!("{} Back up now", icon::CLOUD_ARROW_UP))
-                        .on_hover_text("Back these books up now, to every backup their settings name")
+                        .on_hover_text("Back these books up now, to the backup folder")
                         .clicked()
                     {
                         let (o, b) = (owner.clone(), book.clone());
@@ -946,6 +1025,39 @@ impl OwnerMenu {
                             Effect::Reads,
                             Box::new(move || o.back_up_now(&b)),
                         ));
+                    }
+                    if ui
+                        .button(format!("{} Backups…", icon::CLOUD_ARROW_UP))
+                        .on_hover_text("Choose where these books back up to, protect the backups with a passphrase, and see how they stand")
+                        .clicked()
+                    {
+                        self.dialog = Dialog::Backups(Box::new(BackupForm::new()));
+                    }
+                    if ui
+                        .button(format!("{} Save a backup…", icon::CLOUD_ARROW_UP))
+                        .on_hover_text("Save these books as one backup file to keep or carry")
+                        .clicked()
+                    {
+                        let name = format!(
+                            "{}-{}.wbbackup",
+                            book,
+                            chrono::Local::now().format("%Y-%m-%d")
+                        );
+                        if let Some(file) = rfd::FileDialog::new()
+                            .set_title("Save a backup")
+                            .set_file_name(name)
+                            .add_filter("Wanderbooks backup", &[backup_extension()])
+                            .save_file()
+                        {
+                            let (o, b) = (owner.clone(), book.clone());
+                            let file = file.display().to_string();
+                            start = Some((
+                                "Save a backup".into(),
+                                Effect::Reads,
+                                Box::new(move || o.save_backup(&b, &file)),
+                            ));
+                        }
+                        ui.close();
                     }
                     if ui
                         .button(format!("{} Restore…", icon::CLOCK_COUNTER_CLOCKWISE))
@@ -1123,6 +1235,18 @@ impl OwnerMenu {
                         });
                     });
             }
+            Dialog::Backups(form) => {
+                backups_dialog(
+                    ctx,
+                    self.scope.unwrap_or(egui::Id::NULL),
+                    form,
+                    owner,
+                    book,
+                    &jobs,
+                    &mut close,
+                    &mut run,
+                );
+            }
             Dialog::Restore(form) => {
                 if let Some((rx, asked)) = &form.planning
                     && let Ok(planned) = rx.try_recv()
@@ -1155,6 +1279,31 @@ impl OwnerMenu {
                                 .hint_text("/media/backup, or /home/you/acme.wbbackup"),
                         )
                         .changed();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(open, egui::Button::new("Choose a folder…"))
+                            .clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .set_title("Choose the backup folder")
+                                .pick_folder()
+                        {
+                            form.source = p.display().to_string();
+                            form.plan = None;
+                            form.problem = None;
+                        }
+                        if ui
+                            .add_enabled(open, egui::Button::new("Choose a file…"))
+                            .clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .set_title("Choose a backup file")
+                                .add_filter("Wanderbooks backup", &[backup_extension()])
+                                .pick_file()
+                        {
+                            form.source = p.display().to_string();
+                            form.plan = None;
+                            form.problem = None;
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.label("Passphrase, if the backup has one");
                         if ui
@@ -1262,6 +1411,170 @@ impl OwnerMenu {
             self.start(ctx, run);
         }
     }
+}
+
+/// The extension of a backup file, without the dot.
+fn backup_extension() -> &'static str {
+    ledger_store::backup::FILE_EXTENSION
+}
+
+/// The Backups window: how the books' backups stand, the folder (chosen with
+/// the system's folder dialog, or typed), the passphrase offer (off unless
+/// asked for, with its warning), and a go.
+#[allow(clippy::too_many_arguments)]
+fn backups_dialog(
+    ctx: &egui::Context,
+    scope: egui::Id,
+    form: &mut BackupForm,
+    owner: &Arc<dyn Owner>,
+    book: &str,
+    jobs: &crate::jobs::Spawner,
+    close: &mut bool,
+    run: &mut Option<Start>,
+) {
+    let p = crate::theme::pal(ctx);
+    // Read how they stand, once, and again after a change.
+    if form.state.is_none() && form.loading.is_none() {
+        let (tx, rx) = channel();
+        let (o, b, c) = (owner.clone(), book.to_string(), ctx.clone());
+        let started = jobs.spawn("backup state", crate::jobs::Hold::Free, move |stop| {
+            if stop.requested() {
+                return;
+            }
+            let _ = tx.send(o.backup_state(&b));
+            c.request_repaint();
+        });
+        if started {
+            form.loading = Some(rx);
+        } else {
+            form.state = Some(Err("the system gave no thread for it".into()));
+        }
+    }
+    if let Some(rx) = &form.loading
+        && let Ok(state) = rx.try_recv()
+    {
+        form.loading = None;
+        if let Ok(s) = &state
+            && form.folder.is_empty()
+        {
+            form.folder = s.folder.clone().unwrap_or_default();
+        }
+        form.state = Some(state);
+    }
+    egui::Modal::new(scope.with("owner-backups")).show(ctx, |ui| {
+        ui.set_max_width(540.0);
+        ui.heading("Backups");
+        ui.add_space(4.0);
+        match &form.state {
+            None => {
+                ui.label("Reading how the backups stand…");
+            }
+            Some(Err(why)) => {
+                ui.colored_label(p.warning, why);
+            }
+            Some(Ok(state)) => {
+                for line in &state.lines {
+                    ui.label(line);
+                }
+            }
+        }
+        let sealed = matches!(&form.state, Some(Ok(s)) if s.sealed);
+        ui.separator();
+        ui.label("Back up to this folder: another disk, or one your cloud drive (Dropbox, iCloud, OneDrive, Google Drive) keeps in sync.");
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut form.folder)
+                    .desired_width(330.0)
+                    .hint_text("choose a folder"),
+            );
+            if ui.button("Choose a folder…").clicked()
+                && let Some(folder) = rfd::FileDialog::new()
+                    .set_title("Choose the backup folder")
+                    .pick_folder()
+            {
+                form.folder = folder.display().to_string();
+            }
+        });
+        ui.add_space(4.0);
+        if sealed {
+            ui.label("These backups are protected by a passphrase.");
+        }
+        ui.checkbox(
+            &mut form.protect,
+            if sealed {
+                "Change the passphrase"
+            } else {
+                "Protect the backups with a passphrase (optional)"
+            },
+        );
+        if form.protect {
+            ui.label(PASSPHRASE_WARNING);
+            ui.add(
+                egui::TextEdit::singleline(&mut form.pass)
+                    .password(true)
+                    .hint_text("passphrase (at least 12 characters)")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut form.again)
+                    .password(true)
+                    .hint_text("the same passphrase again")
+                    .desired_width(f32::INFINITY),
+            );
+        }
+        if let Some(why) = &form.problem {
+            ui.colored_label(p.warning, why);
+        }
+        for line in &form.said {
+            ui.label(line);
+        }
+        ui.horizontal(|ui| {
+            let folder = form.folder.trim().to_string();
+            let known = matches!(&form.state, Some(Ok(s)) if s.folder.as_deref() == Some(folder.as_str()));
+            let pass_ready = !form.protect
+                || (form.pass.chars().count() >= 12 && form.pass == form.again);
+            let wants = (!folder.is_empty() && !known) || form.protect;
+            if ui
+                .add_enabled(wants && pass_ready, egui::Button::new("Save these choices"))
+                .on_disabled_hover_text(
+                    "Choose a folder, or set a passphrase of at least 12 characters, typed twice the same",
+                )
+                .clicked()
+            {
+                let (o, b) = (owner.clone(), book.to_string());
+                let pass = form
+                    .protect
+                    .then(|| Secret(std::mem::take(&mut form.pass)))
+                    .filter(|s| !s.0.is_empty());
+                zeroize::Zeroize::zeroize(&mut form.again);
+                form.protect = false;
+                let folder = Some(folder).filter(|f| !f.is_empty() && !known);
+                *run = Some((
+                    "Backups".into(),
+                    Effect::Changes("Setting up the backups"),
+                    Box::new(move || o.set_up_backups(&b, folder, pass, false)),
+                ));
+                *close = true;
+            }
+            if sealed
+                && ui
+                    .button("Take the passphrase off")
+                    .on_hover_text("Later backups are written without protection; earlier sealed ones stay sealed")
+                    .clicked()
+            {
+                let (o, b) = (owner.clone(), book.to_string());
+                *run = Some((
+                    "Backups".into(),
+                    Effect::Changes("Setting up the backups"),
+                    Box::new(move || o.set_up_backups(&b, None, None, true)),
+                ));
+                *close = true;
+            }
+            if ui.button("Close").clicked() {
+                *close = true;
+            }
+        });
+    });
 }
 
 /// The format upgrade's dialog (INVARIANT 5): what it is, the owner

@@ -65,6 +65,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+#[path = "shapes_support/mod.rs"]
+mod shapes_support;
+
 fn today() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()
 }
@@ -1364,14 +1367,7 @@ fn shown_shapes(h: &Harness<'_, App>) -> Vec<String> {
 /// renderer. What the picture shows (colours, text and where each lies) is
 /// in them; how a renderer rasterizes their edges is not.
 fn shapes_of(h: &Harness<'_, App>) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for shape in shown_shapes(h) {
-        for b in shape.bytes() {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(0x100_0000_01b3);
-        }
-    }
-    hash
+    shapes_support::hash_of(&shown_shapes(h))
 }
 
 /// The look of the window, compared as sidenav.rs compares its sidebar's:
@@ -1379,21 +1375,13 @@ fn shapes_of(h: &Harness<'_, App>) -> u64 {
 /// (`tests/snapshots/<name>.shapes`; `TABS_BLESS=1` writes them), for
 /// another renderer rasterizes the same shapes differently (CI's software
 /// one differs from a GPU in antialiasing, by thousands of faint pixels
-/// and some dozens of strong ones along glyph edges). The pixels
+/// and some dozens of strong ones along glyph edges). A mismatch prints
+/// the first differing shapes (`shapes_support`). The pixels
 /// (`tests/snapshots/<name>.png`, tolerant of antialiasing) are compared
 /// as well on the machine that made them and any with its renderer:
 /// `TABS_PIXELS=1`.
 fn picture(h: &mut Harness<'_, App>, name: &str) {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
-    let file = dir.join(format!("{name}.shapes"));
-    let shapes = format!("{:016x}", shapes_of(h));
-    if std::env::var("TABS_BLESS").is_ok() {
-        std::fs::write(&file, format!("{shapes}\n")).unwrap();
-    } else {
-        let want = std::fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("{}: {e} (TABS_BLESS=1 writes it)", file.display()));
-        assert_eq!(shapes, want.trim(), "the shapes of {name} changed");
-    }
+    shapes_support::check(name, &shown_shapes(h));
     if std::env::var("TABS_PIXELS").is_err() {
         return;
     }

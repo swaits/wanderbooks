@@ -164,7 +164,7 @@ pub fn save_file(
         keys: key.map(|k| k.keys()),
         ctx: ctx.clone(),
     };
-    let result = write_into_set(&set, cut, ctx).and_then(|written| {
+    let result = write_into_set(&set, cut, ctx, false).and_then(|written| {
         // The zip's directory, then the file's.
         let writer = lock(&shared)
             .take()

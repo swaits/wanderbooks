@@ -74,7 +74,10 @@ pub use read::list;
 pub use read::{Candidate, Found, Verified, drill, find, prove_local, verify_found};
 pub use seal::BackupKey;
 pub use single::{FILE_EXTENSION, save_file};
-pub use write::{Destination, Written, set_name_for, write_destination, write_local};
+pub use write::{
+    Destination, Options, Written, holds_only_sealed, set_name_for, write_destination,
+    write_destination_with, write_local,
+};
 
 /// What a backup holds, of a book's folder.
 pub const BACKED_UP: [&str; 5] = [
@@ -104,12 +107,12 @@ pub enum BackupError {
     NoBackupThere,
     /// The destination holds other books, or another history of these.
     #[error(
-        "the backup folder holds a backup of other books, or of a different history of these: nothing was written there"
+        "the backup folder holds a backup of other books, or of a different history of these books (they have diverged): nothing was written there"
     )]
     Elsewhere,
-    /// The destination is ahead of these books.
+    /// The destination holds a longer history of these same books.
     #[error(
-        "the backup folder holds a newer backup of these books (through event {0}) than this computer has (event {1}): nothing was written there"
+        "the backup folder holds a longer history of these books (through event {0}) than this computer has (event {1}), as after restoring from an older backup: nothing was written there. If these books are the ones to carry on with, start a new backup set beside the old one: the old one is never touched"
     )]
     Ahead(u64, u64),
     /// Another program kept taking the next place in the destination.
@@ -121,6 +124,28 @@ pub enum BackupError {
     /// The backup is protected by a passphrase and none was given.
     #[error("that backup is protected by a passphrase: it needs the passphrase it was made with")]
     NeedsPassphrase,
+    /// The backups were sealed with a passphrase and this computer has
+    /// lost its key.
+    #[error(
+        "these backups are protected by a passphrase, but this computer no longer has its key: nothing was written. Enter the passphrase in the backup settings to carry on, or choose remove the passphrase there to back up without one"
+    )]
+    KeyMissing,
+    /// A file of the backup folder is online only: its sync service has
+    /// not put it on this computer.
+    #[error(
+        "some files in the backup folder are online only and not downloaded to this computer yet: open the folder in your sync app, keep it available offline, wait until it has finished, and try again"
+    )]
+    NotDownloaded,
+    /// The newest backup does not prove whole; an older one does.
+    #[error("{}", newest_damaged_words(*.number, .older_from.as_deref(), .newest_from.as_deref()))]
+    NewestDamaged {
+        /// The newest manifest's number.
+        number: u64,
+        /// When the newest was made, if it can be read.
+        newest_from: Option<String>,
+        /// When the newest one that proves whole was made (None: none does).
+        older_from: Option<String>,
+    },
     /// The passphrase given opens nothing.
     #[error("that isn't the passphrase this backup was made with")]
     WrongPassphrase,
@@ -166,6 +191,19 @@ impl From<crate::StoreError> for BackupError {
     }
 }
 
+fn newest_damaged_words(number: u64, older: Option<&str>, newest: Option<&str>) -> String {
+    let which = match newest {
+        Some(d) => format!("the newest backup (number {number}, from {d})"),
+        None => format!("the newest backup (number {number})"),
+    };
+    match older {
+        Some(d) => format!(
+            "{which} is damaged; an older one from {d} is whole, and a restore would give that one, not the newest"
+        ),
+        None => format!("{which} is damaged, and no older one proves whole either"),
+    }
+}
+
 /// Told the name of each phase of a long step as it begins (the server's
 /// test knob waits in them).
 pub type PhaseWatch = Arc<dyn Fn(&str) + Send + Sync>;
@@ -181,6 +219,10 @@ pub struct Ctx {
     stop: Option<Arc<AtomicBool>>,
     faults: Option<Faults>,
     phase: Option<PhaseWatch>,
+    /// Tests: a disk that makes no hard links, and one whose move cannot
+    /// refuse to replace.
+    no_links: bool,
+    no_noreplace: bool,
 }
 
 impl std::fmt::Debug for Ctx {
@@ -206,6 +248,31 @@ impl Ctx {
     pub fn with_faults(mut self, faults: Faults) -> Self {
         self.faults = Some(faults);
         self
+    }
+
+    /// A disk that makes no hard links (tests: the commonest other disk,
+    /// FAT or exFAT on a stick).
+    #[doc(hidden)]
+    pub fn with_no_hard_links(mut self) -> Self {
+        self.no_links = true;
+        self
+    }
+
+    /// A disk that makes no links and whose move cannot refuse to replace
+    /// (tests: the last resort of `io.rs`).
+    #[doc(hidden)]
+    pub fn with_no_exclusive_move(mut self) -> Self {
+        self.no_links = true;
+        self.no_noreplace = true;
+        self
+    }
+
+    pub(crate) fn refuses_links(&self) -> bool {
+        self.no_links
+    }
+
+    pub(crate) fn refuses_noreplace(&self) -> bool {
+        self.no_noreplace
     }
 
     /// Told each phase of a long step as it begins.

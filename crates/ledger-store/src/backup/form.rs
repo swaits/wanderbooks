@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 pub(crate) const FORMAT: &str = "wanderbooks-backup";
 /// The form's version. A reader refuses one it does not know.
 pub(crate) const VERSION: u32 = 1;
+/// The folder name of a plain set begins with this.
+pub(crate) const SET_PREFIX: &str = "wanderbooks-";
 /// The folder of manifests in a set.
 pub(crate) const MANIFESTS: &str = "manifests";
 /// The words a person can open.
@@ -23,9 +25,11 @@ pub(crate) const READ_ME: &str = "READ-ME.txt";
 pub(crate) const HEADER: &str = "header.json";
 /// Where a sealed set keeps every piece, under names that say nothing.
 pub(crate) const PIECES: &str = "pieces";
-/// A series with this many segments is next written whole as one: a
-/// manifest stays small however long the books have been backed up.
-pub(crate) const CONSOLIDATE_AT: usize = 200;
+/// A manifest names the one before it and only what is new, until a chain
+/// of this many is made; then one names everything again. A reader walks
+/// at most this many manifests (each proven by the hash its successor
+/// holds) to know one manifest's whole.
+pub(crate) const DELTA_CHAIN: u32 = 64;
 
 /// The kinds of piece.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,8 +82,31 @@ pub(crate) struct Series {
     pub bytes: u64,
     /// SHA-256 of all of them, one after another, hex.
     pub sha256: String,
-    /// The segments, in order.
+    /// The segments, in order. In a manifest that names the one before it
+    /// ([`Manifest::base`]), only those after the first `keep`.
     pub segments: Vec<Piece>,
+    /// How many of its base's first segments this series begins with (a
+    /// manifest that names its base only). Always 0 once read whole.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub keep: usize,
+}
+
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+/// The manifest a delta manifest is built on: its number and what its
+/// body hashes to, so a changed or swapped base is known.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BaseRef {
+    /// Its number.
+    pub number: u64,
+    /// SHA-256 of its body (the text before its check line), hex.
+    pub sha256: String,
 }
 
 /// A file named by its place in a flat folder of a book (the vault, the
@@ -131,6 +158,18 @@ pub(crate) struct Manifest {
     pub vault: Vec<Named>,
     /// The keys.
     pub keys: Vec<Named>,
+    /// The manifest this one is built on, when it names only what is new
+    /// in its series (the vault and keys are always named whole).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<BaseRef>,
+    /// How many manifests are chained below this one (0 for one that names
+    /// everything).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub depth: u32,
+    /// What its body hashes to: set when it is read or written, never
+    /// part of it.
+    #[serde(skip)]
+    pub sha: String,
 }
 
 /// A line of the index of stored files.
@@ -189,10 +228,15 @@ pub(crate) fn manifest_number(name: &str, sealed: bool) -> Option<u64> {
 
 /// Where a piece of `kind` whose contents hash to `sha` is kept, as the
 /// `ordinal`th of its series. Sealed sets keep every piece under a name
-/// made from the key and the hash: it says nothing of what the piece is.
+/// made from the key and the hash (it says nothing of what the piece is),
+/// in a folder of its first two digits, so no folder grows past what a
+/// small disk's file system allows.
 pub(crate) fn piece_path(keys: Option<&Keys>, kind: Kind, ordinal: usize, sha: &str) -> String {
     match keys {
-        Some(k) => format!("{PIECES}/{}", k.piece_name(kind.dir(), sha)),
+        Some(k) => {
+            let name = k.piece_name(kind.dir(), sha);
+            format!("{PIECES}/{}/{name}", &name[..2])
+        }
         None => match kind {
             Kind::Journal | Kind::Access | Kind::Index => {
                 format!("{}/{:06}-{}", kind.dir(), ordinal + 1, &sha[..16])
@@ -201,6 +245,53 @@ pub(crate) fn piece_path(keys: Option<&Keys>, kind: Kind, ordinal: usize, sha: &
             Kind::Vault | Kind::Key => format!("{}/{sha}", kind.dir()),
         },
     }
+}
+
+/// The path of generation `g` of the piece kept at `base`: generation 0
+/// is `base` itself. A piece found damaged is written again under the next
+/// generation, beside the damaged file, which is never touched.
+pub(crate) fn generation_path(base: &str, g: u32) -> String {
+    if g == 0 {
+        base.to_string()
+    } else {
+        format!("{base}.g{g}")
+    }
+}
+
+/// The path without its generation suffix, and the generation.
+pub(crate) fn split_generation(path: &str) -> (&str, u32) {
+    if let Some((stem, g)) = path.rsplit_once(".g")
+        && !g.is_empty()
+        && g.bytes().all(|b| b.is_ascii_digit())
+        && let Ok(n) = g.parse::<u32>()
+        && n > 0
+    {
+        return (stem, n);
+    }
+    (path, 0)
+}
+
+/// The folder a set of `book` is kept in, in a destination, when it is not
+/// sealed: a fixed prefix and the id, so the name is legal on every
+/// system whatever the id is (`con` and `nul` are not names on Windows,
+/// `wanderbooks-con` is). A later set of the same books, begun beside the
+/// first, ends `.2`, `.3`: no id holds a dot, so none is another book's.
+pub(crate) fn plain_set_name(book: &str, number: u32) -> String {
+    if number <= 1 {
+        format!("{SET_PREFIX}{book}")
+    } else {
+        format!("{SET_PREFIX}{book}.{number}")
+    }
+}
+
+/// The book and set number a plain set's folder name says, if it is one.
+pub(crate) fn parse_plain_set_name(name: &str) -> Option<(&str, u32)> {
+    let rest = name.strip_prefix(SET_PREFIX)?;
+    let (book, number) = match rest.rsplit_once('.') {
+        Some((book, n)) => (book, n.parse::<u32>().ok().filter(|n| *n >= 2)?),
+        None => (rest, 1),
+    };
+    (!book.is_empty()).then_some((book, number))
 }
 
 /// A manifest as written: its JSON, a newline, and a line that is the
@@ -223,7 +314,8 @@ pub(crate) fn decode_manifest(bytes: &[u8]) -> Result<Manifest, BackupError> {
     if check != sha_hex(body.as_bytes()) {
         return Err(bad());
     }
-    let m: Manifest = serde_json::from_str(body).map_err(|_| bad())?;
+    let mut m: Manifest = serde_json::from_str(body).map_err(|_| bad())?;
+    m.sha = check.to_string();
     if m.format != FORMAT {
         return Err(BackupError::Damaged(
             "that isn't a wanderbooks backup".into(),
@@ -246,6 +338,9 @@ impl Manifest {
         for m in [&mut a, &mut b] {
             m.number = 0;
             m.written.clear();
+            m.base = None;
+            m.depth = 0;
+            m.sha.clear();
         }
         a == b
     }

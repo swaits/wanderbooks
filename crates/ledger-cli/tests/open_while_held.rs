@@ -2697,7 +2697,7 @@ fn a_backup_is_restored_from_the_command_line() {
     );
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
     let head = s["head_seq"].as_u64().unwrap();
-    let backup = disk.join("acme");
+    let backup = disk.join("wanderbooks-acme");
     let backup = backup.to_str().unwrap();
     // Previewed, and not done without a yes.
     let out = home.books(&["restore", backup, "--id", "copy"]);
@@ -2717,7 +2717,7 @@ fn a_backup_is_restored_from_the_command_line() {
     // A folder named otherwise: restored as the books it holds, by default
     // (here: over those, refused), said.
     let renamed = home.dir.path().join("fernhill-backup");
-    copy_folder(&disk.join("acme"), &renamed);
+    copy_folder(&disk.join("wanderbooks-acme"), &renamed);
     let out = home.books(&["restore", renamed.to_str().unwrap(), "--yes"]);
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("already books called \"acme\""),
@@ -2925,9 +2925,9 @@ fn books_are_backed_up_now_from_the_command_line() {
         String::from_utf8_lossy(&out.stdout).contains("Backed up to the backup folder"),
         "{out:?}"
     );
-    assert!(disk.join("acme").join("manifests").is_dir());
+    assert!(disk.join("wanderbooks-acme").join("manifests").is_dir());
     // A folder gone since: said, and --new-disk begins it again.
-    std::fs::rename(disk.join("acme"), home.dir.path().join("away")).unwrap();
+    std::fs::rename(disk.join("wanderbooks-acme"), home.dir.path().join("away")).unwrap();
     let out = home.books(&["back-up", "acme"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert!(
@@ -2936,7 +2936,7 @@ fn books_are_backed_up_now_from_the_command_line() {
     );
     let out = home.books(&["back-up", "acme", "--new-disk"]);
     assert!(out.status.success(), "{out:?}");
-    assert!(disk.join("acme").join("manifests").is_dir());
+    assert!(disk.join("wanderbooks-acme").join("manifests").is_dir());
     a.end();
 }
 

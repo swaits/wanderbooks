@@ -198,7 +198,7 @@ proptest! {
             copy_tree(&disk, &then);
             for (name, _) in tree(&then) {
                 if let Some(n) = name
-                    .strip_prefix("acme/manifests/")
+                    .strip_prefix("wanderbooks-acme/manifests/")
                     .and_then(|r| r.strip_suffix(".json"))
                     .and_then(|r| r.parse::<u64>().ok())
                     && n > *number
@@ -276,7 +276,7 @@ proptest! {
             books.apply(op);
         }
         write_destination(&plain(&disk), &books.cut(), true, &Ctx::new()).unwrap();
-        let set = disk.join("acme");
+        let set = disk.join("wanderbooks-acme");
         let pieces: Vec<String> = tree(&set)
             .into_keys()
             .filter(|n| !n.starts_with("manifests/") && n != "READ-ME.txt")

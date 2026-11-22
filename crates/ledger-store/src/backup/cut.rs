@@ -75,14 +75,40 @@ fn whole_lines(path: &Path, len: u64) -> std::io::Result<u64> {
     Ok(0)
 }
 
+/// What the exactly-once writes of the vault (ledger-vault `stage`,
+/// `settle`) leave in its folder while a call is between its first step
+/// and its last: a new record staged under `NAME.staged-TAG`, an old one
+/// set aside under `NAME.purging-TAG`.
+enum Scratch<'a> {
+    /// A record staged for a call that has not committed: not the books'
+    /// yet, and nothing the journal at the cut names.
+    Staged,
+    /// A record set aside for a purge that has not committed: still the
+    /// books' record as the journal at the cut stands, under the name it
+    /// has when it is not set aside (`own`).
+    Purging { own: &'a str },
+}
+
+fn scratch_of(name: &str) -> Option<Scratch<'_>> {
+    if name.contains(".staged-") {
+        return Some(Scratch::Staged);
+    }
+    name.split_once(".purging-")
+        .map(|(stem, _)| Scratch::Purging { own: stem })
+}
+
 /// The plain files of a flat folder of a book, by name, with their bytes.
-fn flat_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, BackupError> {
+/// With `vault`, the vault's scratch files are met as they are meant (see
+/// [`Scratch`]): never backed up as records of their own, so a backup cut
+/// while a write of the vault is under way holds the vault as the journal
+/// at the cut says it is.
+fn flat_files(dir: &Path, vault: bool) -> Result<Vec<(String, Vec<u8>)>, BackupError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
-    let mut out = Vec::new();
+    let mut named: Vec<(String, PathBuf)> = Vec::new();
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -92,7 +118,24 @@ fn flat_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, BackupError> {
                 "a folder of the books holds something no book keeps ({name:?})"
             )));
         }
-        out.push((name, std::fs::read(entry.path())?));
+        named.push((name, entry.path()));
+    }
+    let held: std::collections::BTreeSet<String> = named.iter().map(|(n, _)| n.clone()).collect();
+    let mut out = Vec::new();
+    for (name, path) in named {
+        let name = match vault.then(|| scratch_of(&name)).flatten() {
+            None => name,
+            Some(Scratch::Staged) => continue,
+            Some(Scratch::Purging { own }) => {
+                let own = format!("{own}.bin");
+                if held.contains(&own) {
+                    // The record was written anew: that one is the books'.
+                    continue;
+                }
+                own
+            }
+        };
+        out.push((name, std::fs::read(path)?));
     }
     out.sort();
     Ok(out)
@@ -135,9 +178,14 @@ impl Cut {
             head,
             journal_len,
             access_len,
-            vault: flat_files(&dir.join(crate::root::VAULT_DIR))?,
-            keys: flat_files(&dir.join(crate::root::KEYS_DIR))?,
+            vault: flat_files(&dir.join(crate::root::VAULT_DIR), true)?,
+            keys: flat_files(&dir.join(crate::root::KEYS_DIR), false)?,
         })
+    }
+
+    /// The book's folder the cut was taken from.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// The books' id.

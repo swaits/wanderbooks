@@ -138,6 +138,8 @@ pub const DRILL_EVERY: chrono::Duration = chrono::Duration::days(7);
 pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// The most of an error kept.
 const ERROR_MAX: usize = 500;
+/// The most damaged files a record names.
+const REPAIRED_MAX: usize = 20;
 
 /// The test knob that holds a stoppable call as it begins ([`Backups::set_hold`]).
 type CallHold = Arc<dyn Fn(&str) + Send + Sync>;
@@ -266,6 +268,13 @@ pub struct TargetStatus {
     pub sealed: bool,
     /// Its disk isn't connected (its last try found no folder).
     pub disconnected: bool,
+    /// What kind of trouble its last backup or drill had (`ahead`,
+    /// `elsewhere`, `key_missing`, `not_downloaded`, `newest_damaged`,
+    /// `no_folder`, `other`), for the window to say what to do.
+    pub error_kind: Option<String>,
+    /// Files in the backup folder that were found damaged and written again
+    /// (each is left where it is: nothing in it is deleted).
+    pub damaged_files: Vec<String>,
 }
 
 /// The books' backup standing.
@@ -282,8 +291,9 @@ pub struct Status {
 /// A destination the settings name.
 #[derive(Debug, Clone)]
 struct Named {
-    /// Where, and sealed or not; Err when its key can't be read.
-    dest: Result<Destination, String>,
+    /// Where, and sealed or not; Err when its key can't be read, or the
+    /// backups are sealed and this computer has lost the key (INVARIANT 11).
+    dest: Result<Destination, BackupError>,
     /// Where, as an agent is told it.
     at: String,
     /// The destination itself, as its records name it (INVARIANT 2): a
@@ -302,31 +312,81 @@ pub const OLD_REMOTE: &str = "These books' settings still name a private reposit
 /// What books that still carry an old backup history are told.
 pub const OLD_ARCHIVE: &str = "An older backup folder from an earlier version is still in the books' folder. It is no longer written or read, and nothing was deleted: you may delete it yourself once the new backup is whole.";
 
+/// What the record says of whether the backups are sealed: the newest
+/// record that says (a set-up that chose a passphrase or took it off, a
+/// push that was made sealed or plain), with the key's fingerprint, which
+/// opens nothing.
+fn sealed_before(records: &[Map<String, Value>]) -> Option<(bool, Option<String>)> {
+    records.iter().rev().find_map(|r| {
+        if is(r, "setup") {
+            match r.get("passphrase").and_then(Value::as_str) {
+                Some("set") => Some((true, text(r, "fp"))),
+                Some("removed") => Some((false, None)),
+                _ => None,
+            }
+        } else if is(r, "push") {
+            r.get("sealed")
+                .and_then(Value::as_bool)
+                .map(|sealed| (sealed, text(r, "fp")))
+        } else {
+            None
+        }
+    })
+}
+
+/// The records of a book's backup log, if it can be read.
+fn read_records(dir: &Path) -> Vec<Map<String, Value>> {
+    ledger_store::chain::read(&ledger_store::ops::ops_dir(dir).join(LOG_FILE), GENESIS)
+        .map(|r| r.records)
+        .unwrap_or_default()
+}
+
 /// The destination the book's settings name (D-91).
 fn targets(store: &ledger_store::Store, book: &str, dir: &Path) -> Vec<Named> {
     use sha2::{Digest, Sha256};
     let Some(folder) = store.ledger().settings().backup_folder() else {
         return Vec::new();
     };
-    let loaded = BackupKey::load(dir);
-    let (key, sealed, fp) = match &loaded {
-        Ok(Some(k)) => (Ok(Some(k.clone())), true, k.fingerprint()),
-        Ok(None) => (Ok(None), false, String::new()),
-        Err(e) => (Err(e.to_string()), true, "unreadable".to_string()),
+    let digest = |fp: &str| -> String {
+        Sha256::digest(format!("{folder}\0{book}\0{fp}").as_bytes())[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     };
-    let digest: String = Sha256::digest(format!("{folder}\0{book}\0{fp}").as_bytes())[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    vec![Named {
-        dest: key.map(|key| Destination {
-            folder: PathBuf::from(folder),
-            key,
-        }),
-        at: "the backup folder".to_string(),
-        key: digest,
+    let at = "the backup folder".to_string();
+    let named = |dest: Result<Destination, BackupError>, sealed: bool, fp: &str| Named {
+        dest,
+        at: at.clone(),
+        key: digest(fp),
         sealed,
-    }]
+    };
+    let dest = |key: Option<BackupKey>| Destination {
+        folder: PathBuf::from(folder),
+        key,
+    };
+    let one = match BackupKey::load(dir) {
+        Ok(Some(k)) => {
+            let fp = k.fingerprint();
+            named(Ok(dest(Some(k))), true, &fp)
+        }
+        Err(e) => named(Err(e), true, "unreadable"),
+        // No key file. Plain, unless the backups were sealed and the file is
+        // what was lost (INVARIANT 11): the record says what was chosen
+        // last, and where it has nothing, the folder itself does.
+        Ok(None) => match sealed_before(&read_records(dir)) {
+            Some((true, fp)) => named(
+                Err(BackupError::KeyMissing),
+                true,
+                fp.as_deref().unwrap_or(""),
+            ),
+            Some((false, _)) => named(Ok(dest(None)), false, ""),
+            None if ledger_store::backup::holds_only_sealed(Path::new(folder), book) => {
+                named(Err(BackupError::KeyMissing), true, "")
+            }
+            None => named(Ok(dest(None)), false, ""),
+        },
+    };
+    vec![one]
 }
 
 /// What an error of a write is, for the record: tells a disk not connected.
@@ -334,7 +394,11 @@ fn error_kind(e: &BackupError) -> &'static str {
     match e {
         BackupError::NoFolder => "no_folder",
         BackupError::NoBackupThere => "no_backup_there",
-        BackupError::Elsewhere | BackupError::Ahead(..) => "elsewhere",
+        BackupError::Elsewhere => "elsewhere",
+        BackupError::Ahead(..) => "ahead",
+        BackupError::KeyMissing | BackupError::NeedsPassphrase => "key_missing",
+        BackupError::NotDownloaded => "not_downloaded",
+        BackupError::NewestDamaged { .. } => "newest_damaged",
         _ => "other",
     }
 }
@@ -606,6 +670,19 @@ impl Backups {
     /// books' backups and holds none now is begun again there (the owner
     /// says it is a new disk).
     pub async fn run_with(&self, why: &str, new_disk: bool) -> Result<Status, String> {
+        self.run_with_set(why, new_disk, false).await
+    }
+
+    /// [`Self::run_with`]; with `new_set`, a destination that holds a
+    /// longer history of these books than they have now (as after a restore
+    /// from an older backup) gets a new backup set beside the old one,
+    /// which is never touched: only at the person's explicit request.
+    pub async fn run_with_set(
+        &self,
+        why: &str,
+        new_disk: bool,
+        new_set: bool,
+    ) -> Result<Status, String> {
         let _one = self.running.lock().await;
         // Books let go of (closed, or replaced by a restore) write nothing
         // more, and leave no record of a run that never began.
@@ -664,11 +741,13 @@ impl Backups {
                 Err(e) => {
                     self.record(
                         json!({"kind": "push", "why": why, "target": "folder", "at": n.at,
-                        "key": n.key, "ok": false, "error": e, "error_kind": "other"}),
+                        "key": n.key, "ok": false, "error": e.to_string(),
+                        "error_kind": error_kind(e), "sealed": n.sealed}),
                     );
                     continue;
                 }
             };
+            let fp = dest.key.as_ref().map(BackupKey::fingerprint);
             // Its folder is begun only where it never took a backup.
             let may_create = new_disk || !held_before(&n.key, &records);
             let step = self.begin()?;
@@ -676,7 +755,15 @@ impl Backups {
             let cut = cut.clone();
             let written = tokio::task::spawn_blocking(move || {
                 let _step = step;
-                backup::write_destination(&dest, &cut, may_create, &ctx)
+                backup::write_destination_with(
+                    &dest,
+                    &cut,
+                    backup::Options {
+                        may_create,
+                        new_set,
+                    },
+                    &ctx,
+                )
             })
             .await
             .unwrap_or(Err(BackupError::Damaged("the backup stopped".into())));
@@ -684,6 +771,8 @@ impl Backups {
                 Ok(w) => self.record(
                     json!({"kind": "push", "why": why, "target": "folder", "at": n.at,
                     "key": n.key, "ok": true, "number": w.number, "new": w.new,
+                    "sealed": n.sealed, "fp": fp, "files_proven": w.files_proven,
+                    "repaired": w.repaired.iter().take(REPAIRED_MAX).collect::<Vec<_>>(),
                     "head": {"seq": head.0, "hash": head.1}}),
                 ),
                 // Stopped by a close: not a failure of the destination, and
@@ -696,7 +785,7 @@ impl Backups {
                 Err(e) => self.record(
                     json!({"kind": "push", "why": why, "target": "folder", "at": n.at,
                     "key": n.key, "ok": false, "error": e.to_string(),
-                    "error_kind": error_kind(&e)}),
+                    "error_kind": error_kind(&e), "sealed": n.sealed, "fp": fp}),
                 ),
             }
         }
@@ -876,6 +965,8 @@ impl Backups {
             };
             let ctx = self.hurried_ctx();
             let (dir, book) = (self.dir.clone(), self.book.clone());
+            // The newest backup must reach what was last recorded good.
+            let expect = last_good_head(&n.key, &records);
             let drilled = tokio::task::spawn_blocking(move || {
                 let _step = step;
                 let scratch = ledger_store::ops::ops_dir(&dir).join("drill-folder");
@@ -885,6 +976,7 @@ impl Backups {
                     &book,
                     &dir.join(ledger_store::JOURNAL_FILE),
                     &scratch,
+                    expect.as_ref(),
                     &ctx,
                 )
             })
@@ -900,7 +992,8 @@ impl Backups {
                     "at": n.at, "key": n.key, "ok": true, "head": {"seq": head.0, "hash": head.1}}))
                 }
                 Err(e) => self.record(json!({"kind": "drill", "target": "folder",
-                    "at": n.at, "key": n.key, "ok": false, "error": e.to_string()})),
+                    "at": n.at, "key": n.key, "ok": false, "error": e.to_string(),
+                    "error_kind": error_kind(&e)})),
             }
         }
     }
@@ -933,6 +1026,9 @@ pub struct Standing {
     pub folder: Option<String>,
     /// Protected by a passphrase now.
     pub sealed: bool,
+    /// What a person is told of the folder when a sync service keeps it
+    /// (or may): None when no folder is chosen.
+    pub sync: Option<String>,
 }
 
 impl Backups {
@@ -942,10 +1038,16 @@ impl Backups {
         let (book, dir) = (self.book.clone(), self.dir.clone());
         let found = tokio::task::spawn_blocking(move || {
             store
-                .with_store(|s| Standing {
-                    status: standing(s, &book, &dir),
-                    folder: s.ledger().settings().backup_folder().map(str::to_string),
-                    sealed: matches!(BackupKey::load(&dir), Ok(Some(_))),
+                .with_store(|s| {
+                    let folder = s.ledger().settings().backup_folder().map(str::to_string);
+                    Standing {
+                        status: standing(s, &book, &dir),
+                        sync: folder
+                            .as_deref()
+                            .map(|f| sync_words(sync_service(Path::new(f)))),
+                        folder,
+                        sealed: matches!(BackupKey::load(&dir), Ok(Some(_))),
+                    }
                 })
                 .ok()
         })
@@ -956,6 +1058,7 @@ impl Backups {
             status: standing_of(&[], &[], 0, chrono::Utc::now(), None),
             folder: None,
             sealed: false,
+            sync: None,
         })
     }
 
@@ -978,7 +1081,7 @@ impl Backups {
         }
         let step = self.begin()?;
         let (store, dir) = (self.store.clone(), self.dir.clone());
-        let done = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let done = tokio::task::spawn_blocking(move || -> Result<SetUpDone, String> {
             let _step = step;
             let mut lines = Vec::new();
             if let Some(folder) = folder.filter(|f| !f.trim().is_empty()) {
@@ -1014,29 +1117,44 @@ impl Backups {
                 } else {
                     "The backup folder is chosen: the books back themselves up there a little after each change, when they open and before they close.".to_string()
                 });
+                lines.push(sync_words(sync_service(&path)));
             }
             if remove_passphrase && passphrase.is_some() {
                 return Err("choose a passphrase or remove it, not both".into());
             }
+            let mut chose: Option<(&str, Option<String>)> = None;
             if let Some(p) = passphrase {
                 let key = BackupKey::generate(&p).map_err(|e| e.to_string())?;
                 key.store(&dir).map_err(|e| hide(&e.to_string(), &dir))?;
+                chose = Some(("set", Some(key.fingerprint())));
                 lines.push("Backups are now protected by the passphrase: from the next backup on, every file in the backup folder is sealed. Backups made before stay as they were, unprotected, and are never deleted: delete their folder yourself if you want them gone. A forgotten passphrase cannot be recovered by anyone.".to_string());
             } else if remove_passphrase {
                 BackupKey::forget(&dir).map_err(|e| hide(&e.to_string(), &dir))?;
+                chose = Some(("removed", None));
                 lines.push("The passphrase is taken off: from the next backup on, files are written without protection. Backups sealed before stay sealed with the passphrase they were made with.".to_string());
             }
             if lines.is_empty() {
                 lines.push("Nothing was changed.".to_string());
             }
-            Ok(lines)
+            Ok((lines, chose.map(|(c, fp)| (c.to_string(), fp))))
         })
         .await
         .unwrap_or_else(|_| Err("the set-up stopped".into()));
-        if let Ok(lines) = &done {
-            self.record(json!({"kind": "setup", "lines": lines.len()}));
+        match done {
+            Ok((lines, chose)) => {
+                // What was chosen about the passphrase is kept in the
+                // record, so that a key file lost later is told from a
+                // passphrase taken off (INVARIANT 11).
+                let mut rec = json!({"kind": "setup", "lines": lines.len()});
+                if let Some((choice, fp)) = chose {
+                    rec["passphrase"] = json!(choice);
+                    rec["fp"] = json!(fp);
+                }
+                self.record(rec);
+                Ok(lines)
+            }
+            Err(e) => Err(e),
         }
-        done
     }
 
     /// Save a backup as one file at `path` ("Save a backup..."): the same
@@ -1107,6 +1225,60 @@ impl Backups {
     }
 }
 
+/// What a person is told about a backup folder a sync service keeps (set
+/// up, and in the window), `service` being its name when the path tells.
+pub fn sync_words(service: Option<&str>) -> String {
+    let whose = match service {
+        Some(name) => format!("This folder is kept in sync by {name}."),
+        None => "If this folder is kept in sync by a service (Dropbox, iCloud Drive, OneDrive, Google Drive or another):".to_string(),
+    };
+    format!(
+        "{whose} Use it from one computer only: two computers backing up into one synced folder can overwrite each other's work, and a second computer needs a folder of its own. Keep it available offline (not online only), so every file is on this computer when a backup is made or checked: a file that is online only reads as \"not downloaded yet\", and the backup waits."
+    )
+}
+
+/// The sync service whose folder `path` is inside, by the names of the
+/// folders in it: reliable for the folders these services make for
+/// themselves on each system (`Dropbox`, `OneDrive`, `iCloud Drive` and
+/// `Library/Mobile Documents/com~apple~CloudDocs`, `Google Drive` and
+/// `My Drive`, `Nextcloud`, `pCloud Drive`, `Box`), and silent about a
+/// service's folder that was renamed or put somewhere else (then the
+/// set-up says it in general words instead).
+pub fn sync_service(path: &Path) -> Option<&'static str> {
+    path.components().find_map(|c| {
+        let name = c.as_os_str().to_str()?.to_lowercase();
+        let has = |p: &str| {
+            name == p || name.starts_with(&format!("{p} ")) || name.starts_with(&format!("{p}-"))
+        };
+        if has("dropbox") {
+            Some("Dropbox")
+        } else if has("onedrive") {
+            Some("OneDrive")
+        } else if matches!(
+            name.as_str(),
+            "icloud drive" | "iclouddrive" | "com~apple~clouddocs" | "mobile documents"
+        ) {
+            Some("iCloud Drive")
+        } else if matches!(name.as_str(), "google drive" | "googledrive" | "my drive")
+            || name.starts_with("googledrive-")
+        {
+            Some("Google Drive")
+        } else if has("nextcloud") || has("owncloud") {
+            Some("Nextcloud")
+        } else if has("pcloud") || name == "pcloud drive" {
+            Some("pCloud")
+        } else if name == "box" || name == "box sync" {
+            Some("Box")
+        } else {
+            None
+        }
+    })
+}
+
+/// What a set-up did, in words, and the choice it made about the
+/// passphrase ("set" with the key's fingerprint, or "removed").
+type SetUpDone = (Vec<String>, Option<(String, Option<String>)>);
+
 /// The old backup history's folder in a book's folder: left alone.
 const OLD_ARCHIVE_DIR: &str = "archive.git";
 
@@ -1164,10 +1336,12 @@ impl Status {
     /// act on, or one stale, failing, or failing its drill.
     pub fn needs_attention(&self) -> bool {
         self.note.is_some()
-            || self
-                .targets
-                .iter()
-                .any(|t| t.stale || t.last_error.is_some() || t.drill_error.is_some())
+            || self.targets.iter().any(|t| {
+                t.stale
+                    || t.last_error.is_some()
+                    || t.drill_error.is_some()
+                    || !t.damaged_files.is_empty()
+            })
     }
 }
 
@@ -1243,6 +1417,18 @@ fn known_before_damage(path: &Path) -> Vec<Value> {
 
 fn text_field(r: &Map<String, Value>, field: &str) -> Option<String> {
     r.get(field).and_then(Value::as_str).map(str::to_string)
+}
+
+/// The head of the target `key`'s last backup recorded good.
+fn last_good_head(key: &str, records: &[Map<String, Value>]) -> Option<(u64, String)> {
+    let r = records
+        .iter()
+        .rfind(|r| is(r, "push") && of(r, key) && ok(r))?;
+    let head = r.get("head")?;
+    Some((
+        head.get("seq")?.as_u64()?,
+        head.get("hash")?.as_str()?.to_string(),
+    ))
 }
 
 /// Whether the target `key` took a backup of these books (INVARIANT 6).
@@ -1346,6 +1532,29 @@ fn status_of(
         .is_some_and(|r| {
             !ok(r) && r.get("error_kind").and_then(Value::as_str) == Some("no_folder")
         });
+    let error_kind = {
+        let push = records.iter().rfind(|r| is(r, "push") && of(r, key));
+        let from_push = push.filter(|r| !ok(r)).and_then(|r| text(r, "error_kind"));
+        let from_drill = drill.filter(|r| !ok(r)).and_then(|r| text(r, "error_kind"));
+        from_push.or(from_drill)
+    };
+    let mut damaged_files: Vec<String> = Vec::new();
+    for r in records
+        .iter()
+        .filter(|r| is(r, "push") && of(r, key) && ok(r))
+    {
+        for name in r
+            .get("repaired")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if !damaged_files.iter().any(|d| d == name) && damaged_files.len() < REPAIRED_MAX {
+                damaged_files.push(name.to_string());
+            }
+        }
+    }
     TargetStatus {
         target: kind.to_string(),
         at: at.to_string(),
@@ -1357,6 +1566,8 @@ fn status_of(
         drill_error: drill.filter(|r| !ok(r)).and_then(|r| text(r, "error")),
         sealed,
         disconnected,
+        error_kind,
+        damaged_files,
     }
 }
 
@@ -1662,6 +1873,8 @@ mod tests {
             drill_error: None,
             sealed: false,
             disconnected: false,
+            error_kind: None,
+            damaged_files: Vec::new(),
         };
         let status = |t: TargetStatus| Status {
             head_seq: 3,

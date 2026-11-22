@@ -408,7 +408,12 @@ async fn a_book_backs_itself_up_to_its_folder_soon_after_a_write() {
     let live = live_head(&home, "acme");
     assert_eq!(s["head_seq"].as_u64(), Some(live.0));
     assert_eq!(proven(&home, &folder, "folder"), live);
-    assert!(folder.join("acme").join("READ-ME.txt").is_file());
+    assert!(
+        folder
+            .join("wanderbooks-acme")
+            .join("READ-ME.txt")
+            .is_file()
+    );
     // Its journal is the live journal's beginning (a drill's check).
     let scratch = home.outside("scratch-prefix");
     let found = find(&folder, None, &Ctx::new()).unwrap();
@@ -651,21 +656,24 @@ async fn restore_beside_existing_books_and_on_a_clean_install() {
     assert_eq!(figures(&copy).await, want);
     // Its own backups carry on in the same folder, under its own name; the
     // original's stay as they were.
-    let orig = proven(&home, &folder.join("acme"), "orig-before");
+    let orig = proven(&home, &folder.join("wanderbooks-acme"), "orig-before");
     let s = call(&copy, "books.back_up_now", json!({})).await.unwrap();
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
     assert_eq!(
-        proven(&home, &folder.join("acme-copy"), "copy"),
+        proven(&home, &folder.join("wanderbooks-acme-copy"), "copy"),
         live_head(&home, "acme-copy")
     );
-    assert_eq!(proven(&home, &folder.join("acme"), "orig-after"), orig);
+    assert_eq!(
+        proven(&home, &folder.join("wanderbooks-acme"), "orig-after"),
+        orig
+    );
     drop(copy);
     assert!(server.close().success());
     // restore_on_clean_install: another computer's root, nothing in it.
     let other = Home::new("clean");
     let server = Server::start(&other, Duration::from_secs(3600));
     assert_eq!(books_held(&other), Vec::<String>::new());
-    let r = restore(&other, "acme", &folder.join("acme"), false).unwrap();
+    let r = restore(&other, "acme", &folder.join("wanderbooks-acme"), false).unwrap();
     assert_eq!(r.head, live_head(&home, "acme"));
     let c = connect(&other, "acme", other.token("acme", &["read"])).await;
     assert_eq!(figures(&c).await, want);
@@ -775,7 +783,7 @@ async fn restore_refuses_a_damaged_backup_and_writes_nothing() {
     ];
     for (tag, spoil) in damage {
         let copy = home.outside(&format!("bad-{tag}"));
-        copy_dir(&folder.join("acme"), &copy);
+        copy_dir(&folder.join("wanderbooks-acme"), &copy);
         spoil(&copy);
         let why = restore(&home, "acme-bad", &copy, false).unwrap_err();
         assert!(why.contains("can't be restored"), "{tag}: {why}");
@@ -851,7 +859,7 @@ async fn restore_drill_failure_is_flagged() {
     let (folder, _) = backed_up_acme(&home).await;
     assert!(server.close().success());
     // The backup is changed behind the books' back.
-    let j = &files_below(&folder.join("acme"), "journal/")[0];
+    let j = &files_below(&folder.join("wanderbooks-acme"), "journal/")[0];
     let mut b = std::fs::read(j).unwrap();
     let mid = b.len() / 2;
     b[mid] ^= 1;
@@ -1017,7 +1025,7 @@ async fn a_restore_brings_the_vault_and_its_key() {
     let server = Server::start(&third, Duration::from_secs(3600));
     for gone in ["keys/", "vault/"] {
         let copy = home.outside(&format!("no-{}", gone.trim_end_matches('/')));
-        copy_dir(&folder.join("acme"), &copy);
+        copy_dir(&folder.join("wanderbooks-acme"), &copy);
         for f in files_below(&copy, gone) {
             std::fs::remove_file(f).unwrap();
         }
@@ -1036,7 +1044,7 @@ async fn a_replacing_restore_that_fails_leaves_the_books_open() {
     let (folder, want) = backed_up_acme(&home).await;
     let before = live_head(&home, "acme");
     let bad = home.outside("bad");
-    copy_dir(&folder.join("acme"), &bad);
+    copy_dir(&folder.join("wanderbooks-acme"), &bad);
     let j = &files_below(&bad, "journal/")[0];
     let mut b = std::fs::read(j).unwrap();
     let mid = b.len() / 2;
@@ -1095,7 +1103,7 @@ async fn restored_books_never_make_their_backup_folder_again() {
     // there, empty): restored from a copy of the backup.
     let copy = home.outside("copy-of-disk");
     copy_dir(&folder, &copy);
-    std::fs::rename(folder.join("acme"), home.outside("unmounted")).unwrap();
+    std::fs::rename(folder.join("wanderbooks-acme"), home.outside("unmounted")).unwrap();
     let other = Home::new("restore-mount-new");
     let server = Server::start(&other, Duration::from_secs(3600));
     restore(&other, "acme", &copy, false).unwrap();
@@ -1108,13 +1116,16 @@ async fn restored_books_never_make_their_backup_folder_again() {
             .contains("holds no backup"),
         "{s}"
     );
-    assert!(!folder.join("acme").exists(), "made on the wrong disk");
+    assert!(
+        !folder.join("wanderbooks-acme").exists(),
+        "made on the wrong disk"
+    );
     // The human says it's a new disk: begun there again.
     let s = call(&c, "books.back_up_now", json!({"new_disk": true}))
         .await
         .unwrap();
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    assert!(folder.join("acme").join("manifests").is_dir());
+    assert!(folder.join("wanderbooks-acme").join("manifests").is_dir());
     drop(c);
     assert!(server.close().success());
 }
@@ -1147,7 +1158,7 @@ async fn a_damaged_backup_record_never_keeps_the_books_shut() {
     assert!(server.close().success());
     // What it knew of whose backups the folder holds was kept: gone, the
     // folder's backup is a disk not connected, never made again.
-    std::fs::rename(folder.join("acme"), home.outside("away")).unwrap();
+    std::fs::rename(folder.join("wanderbooks-acme"), home.outside("away")).unwrap();
     let server = Server::start(&home, Duration::from_secs(3600));
     let c = connect(&home, "acme", home.token("acme", &["read", "admin"])).await;
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
@@ -1158,7 +1169,7 @@ async fn a_damaged_backup_record_never_keeps_the_books_shut() {
             .contains("holds no backup"),
         "{s}"
     );
-    assert!(!folder.join("acme").exists());
+    assert!(!folder.join("wanderbooks-acme").exists());
     drop(c);
     assert!(server.close().success());
 }
@@ -1232,7 +1243,7 @@ async fn old_settings_and_an_old_backup_history_are_left_alone_and_said() {
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
     assert_eq!(std::fs::read(old.join("HEAD")).unwrap(), before);
-    assert!(folder.join("acme").join("manifests").is_dir());
+    assert!(folder.join("wanderbooks-acme").join("manifests").is_dir());
     drop(c);
     assert!(server.close().success());
 }
@@ -1493,7 +1504,7 @@ async fn a_passphrase_seals_the_backups_and_a_restore_asks_for_it() {
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
     assert_eq!(s["targets"][0]["sealed"], false, "{s}");
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    assert!(folder.join("acme").join("manifests").is_dir());
+    assert!(folder.join("wanderbooks-acme").join("manifests").is_dir());
     let bytes_after: Vec<Vec<u8>> = sealed_before
         .iter()
         .map(|p| std::fs::read(p).unwrap())

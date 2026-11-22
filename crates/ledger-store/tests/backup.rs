@@ -126,10 +126,25 @@ fn a_backup_is_the_book_and_proves_whole() {
     // the journal as a segment, the stored file under its hash.
     let t = tree(&disk);
     let names: Vec<&String> = t.keys().collect();
-    assert!(names.iter().any(|n| *n == "acme/READ-ME.txt"), "{names:?}");
-    assert!(names.iter().any(|n| *n == "acme/manifests/000001.json"));
-    assert!(names.iter().any(|n| n.starts_with("acme/journal/000001-")));
-    assert!(names.iter().any(|n| n.starts_with("acme/files/")));
+    assert!(
+        names.iter().any(|n| *n == "wanderbooks-acme/READ-ME.txt"),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| *n == "wanderbooks-acme/manifests/000001.json")
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| n.starts_with("wanderbooks-acme/journal/000001-"))
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| n.starts_with("wanderbooks-acme/files/"))
+    );
     assert!(!names.iter().any(|n| n.contains(".git")));
 
     // Nothing new: no manifest.
@@ -522,13 +537,13 @@ fn a_damaged_newest_backup_falls_back_to_the_one_before_and_says_so() {
     more(&mut s, 1);
     write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
     // Flip a byte in the second journal segment.
-    let seg = tree(&disk.join("acme"))
+    let seg = tree(&disk.join("wanderbooks-acme"))
         .keys()
         .filter(|n| n.starts_with("journal/"))
         .max()
         .cloned()
         .unwrap();
-    let path = disk.join("acme").join(&seg);
+    let path = disk.join("wanderbooks-acme").join(&seg);
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[3] ^= 1;
     std::fs::write(&path, bytes).unwrap();
@@ -643,7 +658,7 @@ fn two_programs_writing_one_destination_do_not_corrupt_it() {
         // manifest there stands alone.
         let v = prove(&disk, None, dir.path(), &format!("v{round}")).unwrap();
         assert_eq!(v.head, s.head());
-        let set = disk.join("acme");
+        let set = disk.join("wanderbooks-acme");
         for n in std::fs::read_dir(set.join("manifests")).unwrap().flatten() {
             assert!(n.file_name().to_string_lossy().ends_with(".json"));
         }
@@ -680,7 +695,7 @@ fn a_loser_of_a_manifest_number_goes_on_from_the_winner() {
     assert_eq!(w.head, s.head());
     assert!(!w.new, "the winner's manifest already says it");
     assert_eq!(
-        std::fs::read_dir(disk.join("acme/manifests"))
+        std::fs::read_dir(disk.join("wanderbooks-acme/manifests"))
             .unwrap()
             .count(),
         1
@@ -756,7 +771,7 @@ fn a_purged_vault_leaves_the_next_backup_and_not_the_earlier_ones() {
     );
     let then = dir.path().join("then");
     copy_tree(&disk, &then);
-    std::fs::remove_file(then.join("acme/manifests/000002.json")).unwrap();
+    std::fs::remove_file(then.join("wanderbooks-acme/manifests/000002.json")).unwrap();
     let old = prove(&then, None, dir.path(), "old").unwrap();
     assert_eq!(
         std::fs::read(old.tree.join("vault").join("tin-1.bin")).unwrap(),
@@ -774,7 +789,7 @@ fn a_scratch_file_left_by_a_dead_program_never_stops_the_next_backup() {
     write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
     // What a program that died leaves: a scratch file, a short manifest at
     // the next number (its number is spent), a piece cut short.
-    let set = disk.join("acme");
+    let set = disk.join("wanderbooks-acme");
     std::fs::write(set.join("manifests").join(".wb-tmp-9-abcdef"), b"half").unwrap();
     std::fs::write(
         set.join("manifests").join("000002.json"),
@@ -825,6 +840,7 @@ fn a_drill_proves_this_books_history_only() {
         "acme",
         &b1.join("journal.jsonl"),
         &dir.path().join("d1"),
+        None,
         &Ctx::new(),
     )
     .unwrap();
@@ -836,6 +852,7 @@ fn a_drill_proves_this_books_history_only() {
         "acme",
         &b2.join("journal.jsonl"),
         &dir.path().join("d2"),
+        None,
         &Ctx::new(),
     )
     .unwrap_err();
@@ -891,7 +908,7 @@ fn a_link_in_a_backup_is_never_followed() {
     write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
     // The journal's piece replaced by a link to a file elsewhere with the
     // same bytes: it is no piece of the backup.
-    let set = disk.join("acme");
+    let set = disk.join("wanderbooks-acme");
     let piece = std::fs::read_dir(set.join("journal"))
         .unwrap()
         .next()
@@ -937,6 +954,7 @@ fn a_drill_stops_inside_the_phase_it_is_told_to_stop_in() {
             "acme",
             &b.join("journal.jsonl"),
             &scratch,
+            None,
             &ctx,
         );
         assert!(

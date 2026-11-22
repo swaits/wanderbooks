@@ -70,14 +70,36 @@ impl std::fmt::Debug for BackupKey {
     }
 }
 
+/// How many times this program's own setting a header may ask for, of
+/// memory, passes and lanes: a header is read from a folder anyone may
+/// have written, and what it asks for is spent before the passphrase is
+/// known right.
+const KDF_CAP_FACTOR: u32 = 4;
+
 /// Whether `kdf` asks nothing weaker than this program's own cost, and
-/// nothing a computer could not afford (a header changed by hand).
+/// nothing more than [`KDF_CAP_FACTOR`] times it (a header changed by
+/// hand, or written to make a computer spend its memory).
 fn kdf_in_bounds(kdf: &Kdf) -> bool {
+    use crate::passphrase::{M_COST, P_COST, T_COST};
     kdf.alg == "argon2id"
-        && (crate::passphrase::M_COST..=1024 * 1024).contains(&kdf.m)
-        && (crate::passphrase::T_COST..=16).contains(&kdf.t)
-        && (crate::passphrase::P_COST..=8).contains(&kdf.p)
+        && (M_COST..=M_COST.saturating_mul(KDF_CAP_FACTOR)).contains(&kdf.m)
+        && (T_COST..=T_COST.saturating_mul(KDF_CAP_FACTOR)).contains(&kdf.t)
+        && (P_COST..=P_COST.saturating_mul(KDF_CAP_FACTOR)).contains(&kdf.p)
         && hex::decode(&kdf.salt).is_ok_and(|s| (SALT_LEN..=64).contains(&s.len()))
+}
+
+/// What the header's sealed check is bound to: the settings the key was
+/// made with, so that the check opens only under the settings it was
+/// sealed with. (A change a disk or a person makes by accident breaks the
+/// header's own check line and reads as damage; one made on purpose, with
+/// that line made right again, can only make the key come out different,
+/// which opens nothing: no passphrase is guessed faster by it.)
+fn header_aad(kdf: &Kdf) -> Vec<u8> {
+    format!(
+        "wb1|header|{}|{}|{}|{}|{}",
+        kdf.alg, kdf.m, kdf.t, kdf.p, kdf.salt
+    )
+    .into_bytes()
 }
 
 fn stretch(passphrase: &str, kdf: &Kdf) -> Result<Zeroizing<[u8; 32]>, BackupError> {
@@ -207,16 +229,32 @@ impl BackupKey {
             Err(e) => Err(e.into()),
         }
     }
+}
 
-    /// Derive the key `passphrase` makes from what a sealed set's header
-    /// says: [`BackupError::WrongPassphrase`] when it opens nothing,
-    /// [`BackupError::Damaged`] when the header itself is not whole.
-    pub(crate) fn from_header(passphrase: &str, header: &Header) -> Result<Self, BackupError> {
-        let master = stretch(passphrase, &header.kdf)?;
-        let key = Self {
+impl BackupKey {
+    /// The key `passphrase` makes under `header`'s settings, derived once
+    /// for each distinct setting in `cache`: a folder of many sealed sets
+    /// made with one passphrase costs one derivation, not one per set.
+    pub(crate) fn from_header_cached(
+        passphrase: &str,
+        header: &Header,
+        cache: &mut Vec<(Kdf, Result<BackupKey, BackupError>)>,
+    ) -> Result<Self, BackupError> {
+        if let Some((_, got)) = cache.iter().find(|(k, _)| *k == header.kdf) {
+            return match got {
+                Ok(key) => {
+                    key.keys().check(header)?;
+                    Ok(key.clone())
+                }
+                Err(e) => Err(e.clone()),
+            };
+        }
+        let derived = stretch(passphrase, &header.kdf).map(|master| Self {
             kdf: header.kdf.clone(),
             master,
-        };
+        });
+        cache.push((header.kdf.clone(), derived.clone()));
+        let key = derived?;
         key.keys().check(header)?;
         Ok(key)
     }
@@ -281,7 +319,7 @@ impl Keys {
     /// The header for a set sealed with these keys.
     pub(crate) fn header(&self) -> Header {
         let mut sealed = Vec::new();
-        self.seal_stream(&mut &CHECK_TEXT[..], &mut sealed, b"wb1|header")
+        self.seal_stream(&mut &CHECK_TEXT[..], &mut sealed, &header_aad(&self.kdf))
             .expect("sealing into memory");
         Header {
             format: HEADER_FORMAT.into(),
@@ -300,7 +338,7 @@ impl Keys {
             .filter(|s| sha_hex(s) == header.check_sha256)
             .ok_or_else(|| BackupError::Damaged("the sealed backup's header was changed".into()))?;
         let mut plain = Vec::new();
-        match self.open_stream(&mut &sealed[..], b"wb1|header", &mut |b| {
+        match self.open_stream(&mut &sealed[..], &header_aad(&header.kdf), &mut |b| {
             plain.extend_from_slice(b);
             Ok(())
         }) {

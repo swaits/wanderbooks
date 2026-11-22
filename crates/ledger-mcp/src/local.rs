@@ -4567,6 +4567,8 @@ mod tests {
             drill_error: None,
             sealed: false,
             disconnected: false,
+            error_kind: None,
+            damaged_files: Vec::new(),
         };
         let status = |targets| crate::backup::Status {
             head_seq: 5,

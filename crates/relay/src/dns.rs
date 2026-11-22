@@ -768,7 +768,10 @@ mod tests {
             "{one}[[authority]]\nid='b'\ndirectory='https://y/d'\ncaa_domain='ca-two.example'\n"
         );
         std::fs::write(&path, two).unwrap();
-        assert!(list.reload().unwrap());
+        assert!(
+            list.reload().unwrap(),
+            "the list file was rewritten and the reload saw no change"
+        );
         assert_eq!(caa(&svc).len(), 2);
         // No authority listed: no CAA record, which restricts nobody.
         let none = DnsService::new(

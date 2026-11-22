@@ -48,9 +48,12 @@ use ledger_gui::owner::{
 use ledger_gui::{App, Start};
 use ledger_store::root::{BookId, Root};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+
+#[path = "shapes_support/mod.rs"]
+mod shapes_support;
 
 fn now() -> DateTime<Utc> {
     "2026-11-21T10:30:00Z".parse().unwrap()
@@ -977,38 +980,27 @@ fn rounded(text: &str) -> String {
     out
 }
 
-/// A hash of every shape the window paints where it can be seen.
-fn shapes_of(h: &Harness<'_, App>) -> u64 {
+/// Every shape the window paints where it can be seen, in words.
+fn shapes_text(h: &Harness<'_, App>) -> Vec<String> {
     let screen = h.ctx.content_rect();
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for s in h
-        .output()
+    h.output()
         .shapes
         .iter()
         .filter(|s| s.clip_rect.intersects(screen))
-    {
-        let line = rounded(&format!("{:?} {}", s.clip_rect, describe(&s.shape)));
-        for b in line.bytes() {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(0x100_0000_01b3);
-        }
-    }
-    hash
+        .map(|s| rounded(&format!("{:?} {}", s.clip_rect, describe(&s.shape))))
+        .collect()
+}
+
+/// A hash of every shape the window paints where it can be seen.
+fn shapes_of(h: &Harness<'_, App>) -> u64 {
+    shapes_support::hash_of(&shapes_text(h))
 }
 
 /// The shapes painted are the check (`tests/snapshots/<name>.shapes`;
-/// `TABS_BLESS=1` writes them): never pixels.
+/// `TABS_BLESS=1` writes them): never pixels. A mismatch prints the first
+/// differing shapes (`shapes_support`).
 fn picture(h: &Harness<'_, App>, name: &str) {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
-    let file = dir.join(format!("{name}.shapes"));
-    let shapes = format!("{:016x}", shapes_of(h));
-    if std::env::var("TABS_BLESS").is_ok() {
-        std::fs::write(&file, format!("{shapes}\n")).unwrap();
-    } else {
-        let want = std::fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("{}: {e} (TABS_BLESS=1 writes it)", file.display()));
-        assert_eq!(shapes, want.trim(), "the shapes of {name} changed");
-    }
+    shapes_support::check(name, &shapes_text(h));
 }
 
 /// A window of two companies in the three states (alpha: working, beta:
@@ -1072,35 +1064,51 @@ fn three_states(dark: bool, front: usize, size: egui::Vec2) -> (World, Harness<'
     (w, h)
 }
 
+/// The pictures of the window with an assistant in each state. The dock
+/// along the bottom (the Assistant panel) is drawn only where one is
+/// offered (`dock::offered`: unix, not Windows), and without it the page is
+/// taller, so the same window is two pictures: `assist_*` with the dock,
+/// `assist_nodock_*` without. A system takes the one it draws; every
+/// unix system checks both (the second with the dock held back through
+/// `dock::pretend_not_offered`), so the Windows pictures are kept honest
+/// by every run here, and a system that offers no dock has no with-dock
+/// picture to take.
 #[test]
 fn the_state_marks_the_top_bar_and_the_pages_look_as_blessed() {
-    for dark in [false, true] {
-        let mode = if dark { "dark" } else { "light" };
-        let size = egui::vec2(1280.0, 800.0);
-        // alpha in front: working; the tabs show all three marks.
-        let (_w, mut h) = three_states(dark, 0, size);
-        picture(&h, &format!("assist_working_{mode}"));
-        // The arc must not depend on when the picture is taken.
-        let before = shapes_of(&h);
-        h.run_steps(7);
-        assert_eq!(
-            shapes_of(&h),
-            before,
-            "the working picture moved with the frame count ({mode})"
-        );
-        h.state_mut().activate(1);
-        h.run_steps(4);
-        picture(&h, &format!("assist_none_{mode}"));
-        h.state_mut().activate(2);
-        h.run_steps(4);
-        picture(&h, &format!("assist_connected_{mode}"));
-        h.state_mut().goto(Route::Connect);
-        h.run_steps(4);
-        picture(&h, &format!("assist_connect_page_{mode}"));
-        h.state_mut().activate(1);
-        h.state_mut().goto(Route::Receivables);
-        h.run_steps(4);
-        picture(&h, &format!("assist_ask_{mode}"));
+    for with_dock in [true, false] {
+        if with_dock && !ledger_gui::dock::offered() {
+            continue;
+        }
+        let _held_back = (!with_dock).then(ledger_gui::dock::pretend_not_offered);
+        let kind = if with_dock { "assist" } else { "assist_nodock" };
+        for dark in [false, true] {
+            let mode = if dark { "dark" } else { "light" };
+            let size = egui::vec2(1280.0, 800.0);
+            // alpha in front: working; the tabs show all three marks.
+            let (_w, mut h) = three_states(dark, 0, size);
+            picture(&h, &format!("{kind}_working_{mode}"));
+            // The arc must not depend on when the picture is taken.
+            let before = shapes_of(&h);
+            h.run_steps(7);
+            assert_eq!(
+                shapes_of(&h),
+                before,
+                "the working picture moved with the frame count ({kind} {mode})"
+            );
+            h.state_mut().activate(1);
+            h.run_steps(4);
+            picture(&h, &format!("{kind}_none_{mode}"));
+            h.state_mut().activate(2);
+            h.run_steps(4);
+            picture(&h, &format!("{kind}_connected_{mode}"));
+            h.state_mut().goto(Route::Connect);
+            h.run_steps(4);
+            picture(&h, &format!("{kind}_connect_page_{mode}"));
+            h.state_mut().activate(1);
+            h.state_mut().goto(Route::Receivables);
+            h.run_steps(4);
+            picture(&h, &format!("{kind}_ask_{mode}"));
+        }
     }
 }
 

@@ -69,9 +69,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
+thread_local! {
+    /// Set by a test, for its own thread only (each test runs on one).
+    static HIDDEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Whether the dock is offered on this system (INVARIANT 7).
 pub fn offered() -> bool {
-    cfg!(unix)
+    cfg!(unix) && !HIDDEN.get()
+}
+
+/// A test seam: while the returned guard lives, this thread's windows draw
+/// as they do on a system that offers no dock (Windows), whatever system
+/// this is, so that a picture of that window can be blessed anywhere. It
+/// touches no other thread, so tests running side by side do not see it.
+pub fn pretend_not_offered() -> impl Drop {
+    struct Hidden;
+    impl Drop for Hidden {
+        fn drop(&mut self) {
+            HIDDEN.set(false);
+        }
+    }
+    HIDDEN.set(true);
+    Hidden
 }
 
 /// A size in character cells.

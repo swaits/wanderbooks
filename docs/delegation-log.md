@@ -94,3 +94,4 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | review 3 | opus (medium) | backups review | accepted: 1 high (a damaged piece reused, the drill hiding it), 4 medium
 - 2026-11-21 | impl-multi 3 | sonnet (high) | backups fix round (13 items: proof after each backup, drill on the newest only, repair, ahead vs diverged, lost key, no consolidation) | accepted on tests rerun after merge
 - 2026-11-21 | debug 2 | sonnet (high) | a phone number refused as a tax id; the burst-close test | accepted: phones and ZIP+4 kept, the test's assumption fixed; rerun after merge
+- 2026-11-21 | debug 3 | sonnet (high) | two Windows-only failures (authority list change detection; the assistant pictures) | accepted: rerun after merge; the Windows hash was reproduced on Linux with the dock held back

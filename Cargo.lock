@@ -4262,6 +4262,7 @@ name = "ledger-store"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "chacha20poly1305",
  "chrono",
  "criterion",
  "getrandom 0.2.17",
@@ -4279,6 +4280,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+ "zeroize",
+ "zip",
 ]
 
 [[package]]

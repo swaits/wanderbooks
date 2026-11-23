@@ -123,6 +123,15 @@ pub const STOP_WAIT: Duration = Duration::from_secs(90);
 /// taken them, is seen before this one is taken to have lost the race.
 const BEATEN_AFTER: Duration = Duration::from_millis(300);
 
+/// How long the same live program must hold the books, against a start
+/// being waited for, before that start is taken to have lost: well past
+/// the moment between a server taking the lock and saying what it is, or
+/// a stale word of a server that crashed being replaced.
+const LOST_AFTER: Duration = Duration::from_secs(2);
+
+/// How often a start that is waited for is checked for having lost.
+const BEATEN_LOOK: Duration = Duration::from_millis(50);
+
 /// What [`AppServer::wait_ready_unless_beaten`] came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Waited {
@@ -511,17 +520,64 @@ impl AppServer {
         matches!(&*self.shared.phase(), Phase::Ready)
     }
 
+    /// Whether the books are held by a program that is up and serving and
+    /// is not this server: a host (`wanderbooks serve`), or another app's
+    /// server that says so and is not closing. What is only finishing (a
+    /// server that has begun to close, a host's orphan, one a command is
+    /// running for the length of its work) is not that: it ends by itself,
+    /// and this server waits for it. Nor is a lock held with no word
+    /// readable, or with the word of one that is gone: that is the moment
+    /// before this server says what it is, or an earlier build's. Each is
+    /// waited for; none counts as another's.
+    fn another_serves(&self) -> Option<u32> {
+        if host_lock_held(&self.run) {
+            // A host's own pid is not known here: a changing holder is
+            // not told apart, and a host lock held does not come from
+            // this child, which takes only the server's.
+            return Some(0);
+        }
+        if !server_lock_held(&self.run) {
+            return None;
+        }
+        let info = ledger_mcp::local::read_server_info(&self.run)?;
+        (info.by == StartedBy::App && !info.closing && info.pid != self.pid).then_some(info.pid)
+    }
+
     /// Wait for the server to be ready for as long as it lives: a server
     /// still opening companies, or waiting for another server to finish
     /// (local.rs INVARIANT 1), is waited for and not given up on; `Err`
-    /// only when it has exited (INVARIANT 8). `slice` is how long each
-    /// wait runs before the server is looked at again.
+    /// only when it has exited (INVARIANT 8), or when a host or another
+    /// live app server has held the books for [`LOST_AFTER`], the same
+    /// one all that time (the start lost the race: a second window, two
+    /// starts at once): this server is then stopped and the words are
+    /// [`ANOTHER_HAS_THEM`]. A server that is only finishing, a closing
+    /// backup of the window just closed included, is waited for. `slice`
+    /// is how long each wait runs before the server is looked at again.
     pub fn wait_started(&self, slice: Duration) -> Result<(), String> {
+        let mut beaten: Option<(u32, Instant)> = None;
         loop {
-            match self.wait_ready(slice) {
+            // Looked at often, whatever `slice` is: whether another
+            // program holds the books is read between the waits.
+            match self.wait_ready(slice.min(BEATEN_LOOK)) {
                 Ok(()) => return Ok(()),
                 Err(_) if self.exited().is_none() => {}
                 Err(why) => return Err(why),
+            }
+            match self.another_serves() {
+                Some(pid) => {
+                    let (held, since) = beaten.get_or_insert((pid, Instant::now()));
+                    if *held != pid {
+                        (*held, *since) = (pid, Instant::now());
+                    }
+                    if since.elapsed() >= LOST_AFTER {
+                        // This child only waits on the other's lock. Its
+                        // input is closed, which ends it without touching
+                        // anything.
+                        self.stop(FAILED_START_STOP_WAIT);
+                        return Err(ANOTHER_HAS_THEM.into());
+                    }
+                }
+                None => beaten = None,
             }
         }
     }
@@ -998,7 +1054,7 @@ impl AppHost {
     /// Close the window's books (INVARIANT 9): each open company is closed
     /// first, so its closing backup is reported if it was not whole; then
     /// the server's input is closed and its exit waited for, the whole
-    /// taking about `within`. `Ok(None)` when all went whole; else the
+    /// taking at most `within` in all. `Ok(None)` when all went whole; else the
     /// words, a line each (the companies whose backup was incomplete, a
     /// server that exited badly or is still closing). Never kills.
     pub fn stop(&self, within: Duration) -> Result<Option<String>, String> {
@@ -1007,10 +1063,13 @@ impl AppHost {
         let Some(server) = self.slot().take() else {
             return Ok(None);
         };
-        let begun = Instant::now();
+        // One deadline for the whole close (WB-app-4): every step gets
+        // what is left of it.
+        let deadline = Instant::now() + within;
+        let remaining = || deadline.saturating_duration_since(Instant::now());
         let mut said: Vec<String> = Vec::new();
         if server.is_ready() && server.exited().is_none() {
-            match server.books(Some(within)) {
+            match server.books(Some(remaining())) {
                 Ok(books) => {
                     let open: Vec<String> =
                         books.into_iter().filter(|b| b.open).map(|b| b.id).collect();
@@ -1020,9 +1079,9 @@ impl AppHost {
                         let handles: Vec<_> = open
                             .iter()
                             .map(|id| {
-                                let server = &server;
+                                let (server, remaining) = (&server, &remaining);
                                 scope.spawn(move || {
-                                    match server.close_book_within(id, Some(within)) {
+                                    match server.close_book_within(id, Some(remaining())) {
                                         Ok(notice) => notice,
                                         Err(why) => {
                                             Some(format!("{id} could not be closed cleanly: {why}"))
@@ -1033,7 +1092,12 @@ impl AppHost {
                             .collect();
                         handles
                             .into_iter()
-                            .map(|h| h.join().unwrap_or(None))
+                            .zip(open.iter())
+                            .map(|(h, id)| {
+                                h.join().unwrap_or_else(|_| {
+                                    Some(format!("{id} could not be closed cleanly: the close stopped unexpectedly"))
+                                })
+                            })
                             .collect()
                     });
                     said.extend(notices.into_iter().flatten());
@@ -1043,10 +1107,7 @@ impl AppHost {
                 )),
             }
         }
-        let left = within
-            .saturating_sub(begun.elapsed())
-            .max(Duration::from_secs(5));
-        match server.stop(left) {
+        match server.stop(remaining()) {
             Stopped::Closed => {}
             Stopped::Failed(how) => said.push(format!(
                 "The books server ended badly ({how}). Its log is {SERVER_LOG} in the books' run folder; `wanderbooks doctor` says whether the books are whole."

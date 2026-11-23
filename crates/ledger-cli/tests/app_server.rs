@@ -761,6 +761,100 @@ fn a_server_that_never_gets_ready_is_stopped_with_the_window_and_not_left_behind
     until("the server's process is gone", || !alive(pid));
 }
 
+/// A start that loses the race (a second window, two starts at once)
+/// does not wait on the other's lock for ever: it stops its own child and
+/// says, in words, that another program has the books.
+#[cfg(unix)]
+#[test]
+fn a_start_that_loses_the_race_says_another_has_the_books() {
+    let home = Home::new("host-lost-race");
+    // A child that never takes the lock, as one waiting behind another's
+    // would not have: alive until its input closes.
+    let waiting = script(
+        home.dir.path(),
+        "waiting",
+        "#!/bin/sh\ncat >/dev/null\nexit 0\n",
+    );
+    let loser = AppServer::start_in(&waiting, Some(&home.root()), &[], |_| {}).unwrap();
+    let pid = loser.pid();
+    // Another books server takes the books after the loser's look.
+    let other = Server::start_with(&home, &["--started-by", "app", "--open", "none"]);
+    let (said, heard) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        said.send(loser.wait_started(Duration::from_millis(100)))
+            .ok();
+        loser
+    });
+    let answer = heard
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the loser stopped waiting");
+    assert_eq!(answer, Err(ANOTHER_HAS_THEM.to_string()));
+    let loser = waiter.join().unwrap();
+    until("the loser's child is gone", || !alive(pid));
+    assert!(loser.exited().is_some());
+    // The other one is untouched.
+    assert!(server_lock_held(&home.run()));
+    other.close();
+}
+
+/// A start while the books of the window just closed are still being
+/// backed up is waited for, not told "another has them": the old server
+/// says it is closing, and the new start goes on once it is gone.
+#[cfg(unix)]
+#[test]
+fn a_start_behind_a_closing_server_waits_for_it() {
+    let home = Home::new("host-behind-closing");
+    let run = home.run();
+    let waiting = script(
+        home.dir.path(),
+        "waiting",
+        "#!/bin/sh\ncat >/dev/null\nexit 0\n",
+    );
+    let later = AppServer::start_in(&waiting, Some(&home.root()), &[], |_| {}).unwrap();
+    // The old server: the lock held, under another pid, saying it closes.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(run.join("server.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    std::fs::write(
+        run.join("server.info"),
+        format!(
+            r#"{{"by":"app","pid":{},"closing":true}}"#,
+            std::process::id() + 1
+        ),
+    )
+    .unwrap();
+    let later = std::sync::Arc::new(later);
+    let (said, heard) = mpsc::channel();
+    let waiter = std::thread::spawn({
+        let later = later.clone();
+        move || {
+            said.send(later.wait_started(Duration::from_millis(100)))
+                .ok()
+        }
+    });
+    // Well past the time a live holder would have beaten it.
+    assert!(
+        heard.recv_timeout(Duration::from_millis(3500)).is_err(),
+        "a closing server is waited for"
+    );
+    // The window ends the wait by stopping its own server: the start then
+    // ends because its server is gone, not because another had the books.
+    later.stop(Duration::from_secs(30));
+    let answer = heard
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the wait ended");
+    assert!(
+        answer.as_ref().is_err_and(|why| why != ANOTHER_HAS_THEM),
+        "{answer:?}"
+    );
+    waiter.join().unwrap();
+    drop(lock);
+}
+
 /// The window closes after the child was spawned and before the start
 /// stored it (finding: the window closed before the start thread stored
 /// the child): the start stops it itself.

@@ -96,3 +96,4 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | debug 2 | sonnet (high) | a phone number refused as a tax id; the burst-close test | accepted: phones and ZIP+4 kept, the test's assumption fixed; rerun after merge
 - 2026-11-21 | debug 3 | sonnet (high) | two Windows-only failures (authority list change detection; the assistant pictures) | accepted: rerun after merge; the Windows hash was reproduced on Linux with the dock held back
 - 2026-11-22 | impl-multi 2 | sonnet | the relay's setup kit for a Vultr machine; CAA at the relay's own name so its certificate renews | accepted: hunk read, relay tests rerun
+- 2026-11-22 | read 2 + impl 2 | sonnet | a late review of the app's server rechecked on main; the lost-race start, the 90 s close deadline, a panicked close's notice | accepted after one send-back: a closing holder is waited for, missing info never counts
